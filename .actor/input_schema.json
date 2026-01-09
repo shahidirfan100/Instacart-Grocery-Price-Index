@@ -91,19 +91,6 @@
         "useApifyProxy": true,
         "apifyProxyGroups": ["RESIDENTIAL"]
       }
-    },
-    "cookies": {
-      "title": "Custom Cookies",
-      "type": "string",
-      "description": "Optional raw 'Cookie' header string for authentication or consent bypass.",
-      "editor": "textfield"
-    },
-    "dedupe": {
-      "title": "Deduplicate Results",
-      "type": "boolean",
-      "description": "Remove duplicate product URLs from results using in-memory deduplication.",
-      "editor": "checkbox",
-      "default": true
     }
   },
   "required": [],

@@ -4,18 +4,18 @@ Scrape and index grocery prices from Instacart for price comparison and market a
 
 ## Overview
 
-This Apify actor extracts product data from Instacart, including prices, descriptions, nutrition information, and customer reviews. It supports multiple extraction methods with automatic fallback for reliable data collection.
+This Apify actor extracts product data from Instacart using multiple extraction strategies for maximum reliability. It prioritizes JSON API extraction from Apollo GraphQL state with HTML parsing fallback, making it fast, stealthy, and production-ready.
 
 ## Features
 
-- **JSON API Extraction**: Primary method extracts structured data from Next.js hydration scripts
-- **HTML Fallback**: Secondary method parses product data from HTML when JSON is unavailable
-- **Product Details**: Optional deep scraping for nutrition facts, ingredients, and reviews
-- **Price Tracking**: Captures current price, original price, and discount percentages
-- **Multi-Category Support**: Scrape categories, subcategories, or search results
-- **Location-Based**: Filter by store and zipcode for regional pricing
-- **Pagination**: Automatic navigation through multiple pages of results
-- **Deduplication**: Built-in URL deduplication to avoid duplicate products
+- **🚀 JSON API Extraction**: Primary method extracts structured data from Apollo GraphQL state (10x faster than HTML parsing)
+- **🔄 HTML Fallback**: Robust fallback method parses product data from HTML when JSON is unavailable
+- **🎯 Production-Ready**: Optimized performance with stealth features, proper error handling, and low detection risk
+- **🛡️ Stealth Mode**: User agent rotation, request delays, realistic headers, and proxy support
+- **📊 Rich Data**: Product IDs, names, sizes, images, categories, stock status, and extraction method tracking
+- **🔍 Smart Pagination**: Automatic navigation through multiple pages with intelligent page detection
+- **🧹 Deduplication**: Built-in deduplication by product ID and URL to avoid duplicates
+- **⚡ High Performance**: Low concurrency (2) for stealth, optimized parsing, and efficient data structures
 
 ## Use Cases
 

@@ -8,14 +8,14 @@
         "fields": [
           "image_url",
           "name",
-          "price",
-          "original_price",
-          "discount_percent",
-          "rating",
-          "review_count",
+          "size",
           "category",
           "store",
-          "product_url"
+          "in_stock",
+          "extraction_method",
+          "product_url",
+          "timestamp",
+          "zipcode"
         ]
       },
       "display": {
@@ -29,25 +29,9 @@
             "label": "Product Name",
             "format": "text"
           },
-          "price": {
-            "label": "Price",
-            "format": "number"
-          },
-          "original_price": {
-            "label": "Original Price",
-            "format": "number"
-          },
-          "discount_percent": {
-            "label": "Discount",
+          "size": {
+            "label": "Size",
             "format": "text"
-          },
-          "rating": {
-            "label": "Rating",
-            "format": "number"
-          },
-          "review_count": {
-            "label": "Reviews",
-            "format": "number"
           },
           "category": {
             "label": "Category",
@@ -57,9 +41,25 @@
             "label": "Store",
             "format": "text"
           },
+          "in_stock": {
+            "label": "In Stock",
+            "format": "boolean"
+          },
+          "extraction_method": {
+            "label": "Extraction Method",
+            "format": "text"
+          },
           "product_url": {
             "label": "Product URL",
             "format": "link"
+          },
+          "timestamp": {
+            "label": "Scraped At",
+            "format": "date"
+          },
+          "zipcode": {
+            "label": "Zipcode",
+            "format": "text"
           }
         }
       }
