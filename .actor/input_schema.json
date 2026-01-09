@@ -1,0 +1,118 @@
+{
+  "title": "Instacart Grocery Price Index",
+  "description": "Scrape grocery prices from Instacart categories for price comparison and market analysis. Supports JSON API extraction with HTML fallback.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Instacart category or search URL to scrape. Example: https://www.instacart.com/categories/316-food/317-fresh-produce",
+      "editor": "textfield",
+      "prefill": "https://www.instacart.com/categories/316-food/317-fresh-produce"
+    },
+    "startUrls": {
+      "title": "Start URLs List",
+      "type": "array",
+      "description": "Multiple Instacart URLs to scrape (category pages, search results, or product pages).",
+      "editor": "requestListSources",
+      "prefill": [
+        {
+          "url": "https://www.instacart.com/categories/316-food/317-fresh-produce"
+        }
+      ]
+    },
+    "category": {
+      "title": "Category ID",
+      "type": "string",
+      "description": "Instacart category ID for filtering products (e.g., 317 for fresh produce).",
+      "editor": "textfield"
+    },
+    "subcategory": {
+      "title": "Subcategory ID",
+      "type": "string",
+      "description": "Instacart subcategory ID for more specific filtering.",
+      "editor": "textfield"
+    },
+    "searchQuery": {
+      "title": "Search Query",
+      "type": "string",
+      "description": "Search term to find specific products within categories.",
+      "editor": "textfield"
+    },
+    "results_wanted": {
+      "title": "Maximum Number of Products",
+      "type": "integer",
+      "description": "Maximum number of products to collect per category or URL.",
+      "minimum": 1,
+      "default": 100,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum Number of Pages",
+      "type": "integer",
+      "description": "Safety cap on the number of pagination pages to visit per URL.",
+      "minimum": 1,
+      "default": 20,
+      "editor": "number"
+    },
+    "extractDetails": {
+      "title": "Extract Product Details",
+      "type": "boolean",
+      "description": "If enabled, scraper visits individual product pages for detailed information including nutrition facts, ingredients, and reviews.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "includeNutrition": {
+      "title": "Include Nutrition Information",
+      "type": "boolean",
+      "description": "Extract nutrition facts and dietary information when available.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "includeReviews": {
+      "title": "Include Review Counts",
+      "type": "boolean",
+      "description": "Extract customer review counts and ratings.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "storeId": {
+      "title": "Store ID",
+      "type": "string",
+      "description": "Filter results to a specific store on Instacart.",
+      "editor": "textfield"
+    },
+    "zipcode": {
+      "title": "Zipcode",
+      "type": "string",
+      "description": "Zipcode for location-based pricing (prices may vary by region).",
+      "editor": "textfield"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings for anti-bot protection. Recommended: Use Apify Proxy with datacenter IPs.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    },
+    "cookies": {
+      "title": "Custom Cookies",
+      "type": "string",
+      "description": "Optional raw 'Cookie' header string for authentication or consent bypass.",
+      "editor": "textfield"
+    },
+    "dedupe": {
+      "title": "Deduplicate Results",
+      "type": "boolean",
+      "description": "Remove duplicate product URLs from results using in-memory deduplication.",
+      "editor": "checkbox",
+      "default": true
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

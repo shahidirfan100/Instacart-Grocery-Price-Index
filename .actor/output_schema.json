@@ -1,0 +1,26 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "Instacart Grocery Price Index Output",
+  "properties": {
+    "overview": {
+      "type": "string",
+      "title": "Products Overview",
+      "template": "{{links.apiDefaultDatasetUrl}}/items?view=overview"
+    },
+    "products": {
+      "type": "string",
+      "title": "All Products",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "json": {
+      "type": "string",
+      "title": "JSON Output",
+      "template": "{{links.apiDefaultDatasetUrl}}/items?format=json"
+    },
+    "csv": {
+      "type": "string",
+      "title": "CSV Export",
+      "template": "{{links.apiDefaultDatasetUrl}}/items?format=csv"
+    }
+  }
+}

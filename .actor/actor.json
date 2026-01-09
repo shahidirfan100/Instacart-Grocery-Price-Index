@@ -1,0 +1,20 @@
+{
+  "actorSpecification": 1,
+  "name": "instacart-grocery-price-index",
+  "version": "1.0.0",
+  "buildTag": "latest",
+  "dockerfile": "../Dockerfile",
+  "readme": "../README.md",
+  "input": "./input_schema.json",
+  "output": "./output_schema.json",
+  "nodeJsVersion": "22",
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  },
+  "meta": {
+    "title": "Instacart Grocery Price Index",
+    "description": "Scrape and index grocery prices from Instacart for price comparison and market analysis",
+    "author": "Shahid Irfan",
+    "generatedBy": "anthropic-sonnet-4"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "instacart-grocery-price-index",
+  "version": "1.0.0",
+  "description": "Scrape and index grocery prices from Instacart for price comparison and market analysis.",
+  "type": "module",
+  "dependencies": {
+    "apify": "^3.5.2",
+    "crawlee": "^3.15.3",
+    "cheerio": "^1.0.0-rc.12",
+    "got-scraping": "^4.1.2",
+    "jsdom": "^27.1.0",
+    "impit": "^0.9.2",
+    "header-generator": "^2.1.27"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "test": "echo \"Error: oops, the Actor has no tests yet, sad!\" && exit 1"
+  },
+  "author": "Shahid Irfan",
+  "license": "ISC"
+}

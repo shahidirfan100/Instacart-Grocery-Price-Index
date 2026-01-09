@@ -1,0 +1,195 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Products Overview",
+      "transformation": {
+        "fields": [
+          "image_url",
+          "name",
+          "price",
+          "original_price",
+          "discount_percent",
+          "rating",
+          "review_count",
+          "category",
+          "store",
+          "product_url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "image_url": {
+            "label": "Image",
+            "format": "image"
+          },
+          "name": {
+            "label": "Product Name",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "number"
+          },
+          "original_price": {
+            "label": "Original Price",
+            "format": "number"
+          },
+          "discount_percent": {
+            "label": "Discount",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "review_count": {
+            "label": "Reviews",
+            "format": "number"
+          },
+          "category": {
+            "label": "Category",
+            "format": "text"
+          },
+          "store": {
+            "label": "Store",
+            "format": "text"
+          },
+          "product_url": {
+            "label": "Product URL",
+            "format": "link"
+          }
+        }
+      }
+    },
+    "details": {
+      "title": "Full Details",
+      "transformation": {
+        "fields": [
+          "product_id",
+          "name",
+          "brand",
+          "category",
+          "subcategory",
+          "price",
+          "original_price",
+          "price_per_unit",
+          "unit",
+          "size",
+          "discount_percent",
+          "rating",
+          "review_count",
+          "in_stock",
+          "dietary_tags",
+          "image_url",
+          "product_url",
+          "store",
+          "description",
+          "nutrition",
+          "ingredients",
+          "timestamp",
+          "zipcode"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "product_id": {
+            "label": "Product ID",
+            "format": "text"
+          },
+          "name": {
+            "label": "Name",
+            "format": "text"
+          },
+          "brand": {
+            "label": "Brand",
+            "format": "text"
+          },
+          "category": {
+            "label": "Category",
+            "format": "text"
+          },
+          "subcategory": {
+            "label": "Subcategory",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "number"
+          },
+          "original_price": {
+            "label": "Original Price",
+            "format": "number"
+          },
+          "price_per_unit": {
+            "label": "Price Per Unit",
+            "format": "number"
+          },
+          "unit": {
+            "label": "Unit",
+            "format": "text"
+          },
+          "size": {
+            "label": "Size",
+            "format": "text"
+          },
+          "discount_percent": {
+            "label": "Discount",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "review_count": {
+            "label": "Reviews",
+            "format": "number"
+          },
+          "in_stock": {
+            "label": "In Stock",
+            "format": "boolean"
+          },
+          "dietary_tags": {
+            "label": "Dietary Tags",
+            "format": "array"
+          },
+          "image_url": {
+            "label": "Image",
+            "format": "image"
+          },
+          "product_url": {
+            "label": "URL",
+            "format": "link"
+          },
+          "store": {
+            "label": "Store",
+            "format": "text"
+          },
+          "description": {
+            "label": "Description",
+            "format": "text"
+          },
+          "nutrition": {
+            "label": "Nutrition",
+            "format": "object"
+          },
+          "ingredients": {
+            "label": "Ingredients",
+            "format": "array"
+          },
+          "timestamp": {
+            "label": "Scraped At",
+            "format": "date"
+          },
+          "zipcode": {
+            "label": "Zipcode",
+            "format": "text"
+          }
+        }
+      }
+    }
+  }
+}

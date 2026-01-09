@@ -1,0 +1,9 @@
+{
+  "startUrl": "https://www.instacart.com/categories/316-food/317-fresh-produce",
+  "results_wanted": 50,
+  "max_pages": 5,
+  "extractDetails": true,
+  "includeNutrition": true,
+  "includeReviews": true,
+  "dedupe": true
+}
