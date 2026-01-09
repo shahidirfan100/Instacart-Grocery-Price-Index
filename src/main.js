@@ -73,25 +73,67 @@ async function main() {
         }
 
         /**
+         * Clean image URL by removing srcset artifacts and commas
+         */
+        function cleanImageUrl(url) {
+            if (!url) return null;
+            // Remove trailing commas, spaces, and srcset descriptors (like 2x, 197w)
+            let cleaned = url.trim()
+                .replace(/,$/, '')           // Remove trailing comma
+                .replace(/\s+\d+[wx].*$/, '') // Remove srcset descriptors
+                .replace(/,$/, '')           // Remove any remaining trailing comma
+                .trim();
+            return cleaned || null;
+        }
+
+        /**
          * PRIORITY 1: Extract from Apollo GraphQL state (node-apollo-state)
          */
         function extractApolloState($) {
             try {
                 const apolloScript = $('script#node-apollo-state');
-                if (apolloScript.length) {
-                    let rawData = apolloScript.html() || apolloScript.text() || '';
+                if (!apolloScript.length) {
+                    log.info('⚠️ Apollo state script not found in page');
+                    return null;
+                }
 
-                    // Decode HTML entities
-                    const decodedData = decodeHtmlEntities(rawData);
+                let rawData = apolloScript.html() || apolloScript.text() || '';
+                log.info(`📊 Apollo script found, raw length: ${rawData.length} chars`);
 
-                    if (decodedData && decodedData.trim().startsWith('{')) {
-                        const parsed = JSON.parse(decodedData);
-                        log.debug(`Apollo state parsed successfully, keys: ${Object.keys(parsed).length}`);
-                        return parsed;
+                if (!rawData || rawData.length < 100) {
+                    log.warning('Apollo state is empty or too short');
+                    return null;
+                }
+
+                // Decode HTML entities
+                const decodedData = decodeHtmlEntities(rawData);
+
+                // Try to find JSON object boundaries
+                let jsonString = decodedData.trim();
+                if (!jsonString.startsWith('{')) {
+                    // Try to extract JSON from potential wrapper
+                    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        jsonString = jsonMatch[0];
                     }
                 }
+
+                if (jsonString && jsonString.startsWith('{')) {
+                    const parsed = JSON.parse(jsonString);
+                    const keyCount = Object.keys(parsed).length;
+                    log.info(`✅ Apollo state parsed: ${keyCount} top-level keys`);
+
+                    // Log some key names for debugging
+                    const sampleKeys = Object.keys(parsed).slice(0, 5);
+                    log.debug(`Sample Apollo keys: ${sampleKeys.join(', ')}`);
+
+                    return parsed;
+                }
+
+                log.warning('Apollo state does not contain valid JSON');
             } catch (e) {
-                log.debug(`Apollo state parsing failed: ${e.message}`);
+                log.warning(`Apollo state parsing failed: ${e.message}`);
+                log.debug(`Error details: ${e.stack?.slice(0, 200)}`);
             }
             return null;
         }
@@ -224,7 +266,7 @@ async function main() {
                 price: typeof price === 'number' ? price : parsePrice(price),
                 original_price: typeof originalPrice === 'number' ? originalPrice : parsePrice(originalPrice),
                 size: size,
-                image_url: imageUrl ? toAbs(imageUrl, baseUrl) : null,
+                image_url: imageUrl ? cleanImageUrl(toAbs(imageUrl, baseUrl)) : null,
                 product_url: productUrl ? toAbs(productUrl, baseUrl) : null,
                 in_stock: inStock,
                 store: 'Instacart',
@@ -280,14 +322,22 @@ async function main() {
                         const priceText = $el.find('[class*="Price"], [data-testid*="price"]').first().text().trim();
                         const price = parsePrice(priceText);
 
-                        // Find image
-                        const imgSrc = $el.find('img').attr('src') || $el.find('img').attr('srcset')?.split(' ')[0];
+                        // Find image - handle srcset format properly
+                        let imgSrc = $el.find('img').attr('src');
+                        if (!imgSrc) {
+                            const srcset = $el.find('img').attr('srcset');
+                            if (srcset) {
+                                // srcset format: "url1 197w, url2 394w" - get first URL
+                                imgSrc = srcset.split(',')[0]?.split(' ')[0];
+                            }
+                        }
+                        imgSrc = cleanImageUrl(imgSrc);
 
                         if (name && name.length > 2 && name.length < 200) {
                             products.push({
                                 name: name,
                                 price: price,
-                                image_url: imgSrc ? toAbs(imgSrc, baseUrl) : null,
+                                image_url: imgSrc ? cleanImageUrl(toAbs(imgSrc, baseUrl)) : null,
                                 product_url: fullUrl,
                                 store: 'Instacart',
                                 in_stock: true,
