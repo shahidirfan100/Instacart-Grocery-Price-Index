@@ -2,7 +2,7 @@
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
-import got from 'got-scraping';
+import { gotScraping } from 'got-scraping';
 
 await Actor.init();
 
@@ -214,7 +214,7 @@ async function main() {
         // Extract product details from detail page
         async function extractProductDetails(url, product) {
             try {
-                const response = await got.get(url, {
+                const response = await gotScraping.get(url, {
                     headers: getHeaders(),
                     proxyUrl: proxyConf?.newUrl(),
                     timeout: { request: 30000 },
