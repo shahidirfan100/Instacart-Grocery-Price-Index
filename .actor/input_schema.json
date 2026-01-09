@@ -4,13 +4,6 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "startUrl": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "Instacart category or search URL to scrape. Example: https://www.instacart.com/categories/316-food/317-fresh-produce",
-      "editor": "textfield",
-      "prefill": "https://www.instacart.com/categories/316-food/317-fresh-produce"
-    },
     "startUrls": {
       "title": "Start URLs List",
       "type": "array",
