@@ -77,10 +77,26 @@
       "editor": "textfield"
     },
     "zipcode": {
-      "title": "Zipcode",
+      "title": "📍 Zipcode",
       "type": "string",
       "description": "Zipcode for location-based pricing (prices may vary by region).",
-      "editor": "textfield"
+      "editor": "textfield",
+      "default": "94105"
+    },
+    "dedupe": {
+      "title": "🔄 Remove Duplicates",
+      "type": "boolean",
+      "description": "Remove duplicate products by ID, URL, or name.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "delay_ms": {
+      "title": "⏱️ Request Delay (ms)",
+      "type": "integer",
+      "description": "Delay between requests in milliseconds for stealth mode.",
+      "minimum": 1000,
+      "default": 2000,
+      "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
@@ -89,7 +105,9 @@
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       }
     }
   },
