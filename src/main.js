@@ -16,7 +16,7 @@ async function main() {
             results_wanted: RESULTS_WANTED_RAW = 100,
             max_pages: MAX_PAGES_RAW = 10,
             zipcode = '94105',
-            extractDetails = true,
+            extractDetails = false,
             proxyConfiguration,
         } = input;
 
@@ -731,10 +731,10 @@ async function main() {
 
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
-                maxRequestRetries: 1,
-                requestHandlerTimeoutSecs: 20,
-                navigationTimeoutSecs: 15,
-                maxConcurrency: 5, // Faster - 5 parallel
+                maxRequestRetries: 2,
+                requestHandlerTimeoutSecs: 60,
+                navigationTimeoutSecs: 45,
+                maxConcurrency: 2, // Reduced for stability
                 headless: true,
                 useSessionPool: true,
                 persistCookiesPerSession: true,
@@ -767,10 +767,10 @@ async function main() {
 
                 preNavigationHooks: [
                     async ({ page, request }) => {
-                        // Block heavy resources for speed
+                        // Block only heavy media resources (keep CSS for page to load properly)
                         await page.route('**/*', (route) => {
                             const resourceType = route.request().resourceType();
-                            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                            if (['image', 'media', 'font'].includes(resourceType)) {
                                 return route.abort();
                             }
                             return route.continue();

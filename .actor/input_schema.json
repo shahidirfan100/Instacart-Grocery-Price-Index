@@ -52,9 +52,9 @@
     "extractDetails": {
       "title": "📄 Fetch Detail Pages",
       "type": "boolean",
-      "description": "Fetch individual product pages to get price, brand, original_price, unit_price, and retailer info (slower but more complete data).",
+      "description": "Fetch individual product pages to get price, brand, original_price, unit_price, and retailer info. WARNING: Slow and may timeout - disable for faster scraping.",
       "editor": "checkbox",
-      "default": true
+      "default": false
     },
     "includeNutrition": {
       "title": "Include Nutrition Information",
