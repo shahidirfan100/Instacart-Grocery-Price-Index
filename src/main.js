@@ -1,8 +1,9 @@
 // Instacart Grocery Price Index - Production-ready Apify Actor
-// Playwright-first + Apollo GraphQL parsing
+// Hybrid approach: HTTP + Apollo GraphQL (Priority 1) → Playwright stealth fallback (Priority 2)
 import { Actor, log } from 'apify';
-import { PlaywrightCrawler, Dataset } from 'crawlee';
+import { CheerioCrawler, PlaywrightCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
+import { gotScraping } from 'got-scraping';
 
 await Actor.init();
 
@@ -37,29 +38,6 @@ async function main() {
         const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms + Math.random() * 500));
         const toAbs = (href, base) => { try { return new URL(href, base).href; } catch { return null; } };
-        const safeJsonParse = (value) => {
-            if (!value) return null;
-            if (typeof value === 'object') return value;
-            try { return JSON.parse(value); } catch { return null; }
-        };
-
-        const extractStoreSlugFromUrl = (url) => {
-            if (!url) return null;
-            try {
-                const urlObj = new URL(url);
-                const match = urlObj.pathname.match(/\/store\/([^\/]+)/);
-                if (match && match[1]) return match[1];
-            } catch { /* ignore */ }
-            return null;
-        };
-
-        const storeNameFromSlug = (slug) => {
-            if (!slug) return 'Instacart';
-            return slug
-                .split('-')
-                .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-                .join(' ');
-        };
 
         // Build initial URLs
         const initial = [];
@@ -68,13 +46,6 @@ async function main() {
         }
         if (startUrl && !initial.some(u => u.url === startUrl)) initial.push({ url: startUrl });
         if (!initial.length) initial.push({ url: 'https://www.instacart.com/categories/316-food/317-fresh-produce' });
-
-        const storeSlug = initial
-            .map(item => extractStoreSlugFromUrl(typeof item === 'string' ? item : item?.url))
-            .find(Boolean) || extractStoreSlugFromUrl(startUrl);
-        if (!storeSlug) {
-            log.warning('?? Start URL is not store-specific. Prices/availability may be missing. Use /store/{slug}/... URLs.');
-        }
 
         const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
         let saved = 0;
@@ -115,29 +86,6 @@ async function main() {
             return cleaned || null;
         }
 
-        function parseApolloStateFromString(rawData) {
-            if (!rawData || rawData.length < 100) return null;
-            let decoded = rawData;
-            if (decoded.includes('%7B') || decoded.includes('%22')) {
-                try {
-                    decoded = decodeURIComponent(decoded);
-                    log.debug('URL decoding applied to Apollo state');
-                } catch (e) {
-                    log.debug('URL decoding not needed or failed, continuing...');
-                }
-            }
-
-            const decodedData = decodeHtmlEntities(decoded);
-            let jsonString = decodedData.trim();
-            if (!jsonString.startsWith('{')) {
-                const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
-                if (jsonMatch) jsonString = jsonMatch[0];
-            }
-
-            if (!jsonString.startsWith('{')) return null;
-            return safeJsonParse(jsonString);
-        }
-
         /**
          * PRIORITY 1: Extract from Apollo GraphQL state (node-apollo-state)
          */
@@ -145,27 +93,53 @@ async function main() {
             try {
                 const apolloScript = $('script#node-apollo-state');
                 if (!apolloScript.length) {
-                    log.info('?? Apollo state script not found in page');
+                    log.info('⚠️ Apollo state script not found in page');
                     return null;
                 }
 
-                const rawData = apolloScript.html() || apolloScript.text() || '';
-                log.info(`?? Apollo script found, raw length: ${rawData.length} chars`);
+                let rawData = apolloScript.html() || apolloScript.text() || '';
+                log.info(`📊 Apollo script found, raw length: ${rawData.length} chars`);
 
-                const parsed = parseApolloStateFromString(rawData);
-                if (!parsed) {
-                    log.warning('Apollo state does not contain valid JSON');
+                if (!rawData || rawData.length < 100) {
+                    log.warning('Apollo state is empty or too short');
                     return null;
                 }
 
-                const keyCount = Object.keys(parsed).length;
-                log.info(`? Apollo state parsed: ${keyCount} top-level keys`);
+                // Step 1: Decode URL encoding first (handles %7B, %22, etc.)
+                if (rawData.includes('%7B') || rawData.includes('%22')) {
+                    try {
+                        rawData = decodeURIComponent(rawData);
+                        log.debug('URL decoding applied to Apollo state');
+                    } catch (e) {
+                        log.debug('URL decoding not needed or failed, continuing...');
+                    }
+                }
 
-                // Log sample keys for debugging
-                const sampleKeys = Object.keys(parsed).slice(0, 5);
-                log.debug(`Sample Apollo keys: ${sampleKeys.join(', ')}`);
+                // Step 2: Decode HTML entities
+                const decodedData = decodeHtmlEntities(rawData);
 
-                return parsed;
+                // Try to find JSON object boundaries
+                let jsonString = decodedData.trim();
+                if (!jsonString.startsWith('{')) {
+                    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        jsonString = jsonMatch[0];
+                    }
+                }
+
+                if (jsonString && jsonString.startsWith('{')) {
+                    const parsed = JSON.parse(jsonString);
+                    const keyCount = Object.keys(parsed).length;
+                    log.info(`✅ Apollo state parsed: ${keyCount} top-level keys`);
+
+                    // Log sample keys for debugging
+                    const sampleKeys = Object.keys(parsed).slice(0, 5);
+                    log.debug(`Sample Apollo keys: ${sampleKeys.join(', ')}`);
+
+                    return parsed;
+                }
+
+                log.warning('Apollo state does not contain valid JSON');
             } catch (e) {
                 log.warning(`Apollo state parsing failed: ${e.message}`);
                 log.debug(`Error details: ${e.stack?.slice(0, 200)}`);
@@ -212,23 +186,6 @@ async function main() {
                         }
                     }
 
-                    if (key.startsWith('Items:') || key.includes('Items')) {
-                        for (const queryData of Object.values(value)) {
-                            if (!queryData || typeof queryData !== 'object') continue;
-                            const itemsArray = queryData?.items || queryData?.items?.items || [];
-                            if (Array.isArray(itemsArray) && itemsArray.length > 0) {
-                                extractProductsFromArray(itemsArray, apolloData, baseUrl, products);
-                            }
-                        }
-                    }
-
-                    if (key.toLowerCase().includes('search')) {
-                        for (const queryData of Object.values(value)) {
-                            if (!queryData || typeof queryData !== 'object') continue;
-                            extractProductsFromSearchData(queryData, apolloData, baseUrl, products);
-                        }
-                    }
-
                     // Also check for direct Product: keys (fallback for other Apollo structures)
                     if (key.startsWith('Product:') || key.startsWith('Item:') ||
                         value.__typename === 'Product' || value.__typename === 'Item') {
@@ -252,9 +209,6 @@ async function main() {
                             }
                         }
                     }
-                    if (String(queryKey).toLowerCase().includes('search')) {
-                        extractProductsFromSearchData(queryValue, apolloData, baseUrl, products);
-                    }
                 }
 
                 log.info(`✅ Apollo extraction: Found ${products.length} products`);
@@ -275,29 +229,6 @@ async function main() {
             const name = item.name || item.title || null;
             const size = item.size || null;
             const landingParam = item.landingParam || null;
-
-            const priceSection = item.price?.viewSection || item.viewSection?.priceInfo || item.viewSection?.pricing || {};
-            const itemCard = item.price?.viewSection?.itemCard || {};
-            const itemDetails = item.price?.viewSection?.itemDetails || {};
-            const priceRaw = itemCard.priceString || itemCard.price ||
-                priceSection.priceString || priceSection.price ||
-                item.priceString || item.price || null;
-            const originalRaw = itemCard.plainFullPriceString || itemCard.fullPriceString ||
-                itemCard.originalPrice || item.originalPrice || item.wasPrice ||
-                priceSection.originalPrice || null;
-            const unitPrice = itemDetails.pricePerUnitString ||
-                itemDetails.unitPrice ||
-                priceSection.pricePerUnitString ||
-                item.unitPrice ||
-                item.pricePerUnit ||
-                null;
-            const brand = item.brand || item.brandName || item.brandInfo?.name || null;
-            const description = item.description ||
-                item.productDescription ||
-                item.shortDescription ||
-                item.longDescription ||
-                item.details?.description ||
-                null;
 
             // Extract image URL from nested structure
             let imageUrl = null;
@@ -320,24 +251,14 @@ async function main() {
                 ? `https://www.instacart.com/products/${landingParam}`
                 : (id ? `https://www.instacart.com/products/${id}` : null);
 
-            const slugFromBase = extractStoreSlugFromUrl(baseUrl);
-            const storeSlugValue = item.retailerSlug || item.storeSlug || slugFromBase;
-            const store = item.retailerName || item.storeName || item.retailer?.name || item.store?.name || storeNameFromSlug(storeSlugValue);
-
             return {
                 product_id: id,
                 name: name,
-                brand: brand,
-                price: typeof priceRaw === 'number' ? priceRaw : parsePrice(priceRaw),
-                original_price: typeof originalRaw === 'number' ? originalRaw : parsePrice(originalRaw),
-                unit_price: unitPrice,
                 size: size,
                 image_url: imageUrl ? cleanImageUrl(imageUrl) : null,
                 product_url: productUrl,
-                description: description,
                 in_stock: true,
-                store: store,
-                store_slug: storeSlugValue,
+                store: 'Instacart',
                 category: 'Fresh Produce',
                 timestamp: new Date().toISOString(),
                 extraction_method: 'apollo_graphql'
@@ -383,55 +304,6 @@ async function main() {
             return results;
         }
 
-        function resolveApolloItem(item, apolloData) {
-            if (!item) return null;
-            if (item.__ref && apolloData[item.__ref]) return apolloData[item.__ref];
-            if (item.item?.__ref && apolloData[item.item.__ref]) return apolloData[item.item.__ref];
-            if (item.product?.__ref && apolloData[item.product.__ref]) return apolloData[item.product.__ref];
-            if (item.item) return item.item;
-            if (item.product) return item.product;
-            return item;
-        }
-
-        function extractProductsFromArray(arr, apolloData, baseUrl, products) {
-            for (const raw of arr) {
-                const resolved = resolveApolloItem(raw, apolloData);
-                if (!resolved || typeof resolved !== 'object') continue;
-                const product = resolved.price?.viewSection
-                    ? extractLandingProduct(resolved, baseUrl)
-                    : extractProductFields(resolved, baseUrl);
-                if (product.name || product.product_id) products.push(product);
-            }
-        }
-
-        function collectSearchArrays(node, arrays, depth = 0) {
-            if (!node || depth > 4) return;
-            if (Array.isArray(node)) {
-                arrays.push(node);
-                return;
-            }
-            if (typeof node !== 'object') return;
-
-            for (const [key, value] of Object.entries(node)) {
-                if (Array.isArray(value)) {
-                    const k = key.toLowerCase();
-                    if (k.includes('item') || k.includes('result') || k.includes('hit') || k.includes('product')) {
-                        arrays.push(value);
-                    }
-                } else if (value && typeof value === 'object') {
-                    collectSearchArrays(value, arrays, depth + 1);
-                }
-            }
-        }
-
-        function extractProductsFromSearchData(data, apolloData, baseUrl, products) {
-            const arrays = [];
-            collectSearchArrays(data, arrays);
-            for (const arr of arrays) {
-                extractProductsFromArray(arr, apolloData, baseUrl, products);
-            }
-        }
-
         /**
          * Extract standard fields from a product object
          */
@@ -458,13 +330,9 @@ async function main() {
 
             const size = product.size || product.packageSize || product.unitSize || null;
             const brand = product.brand || product.brandName || null;
-            const description = product.description || product.productDescription || product.longDescription || null;
             const inStock = product.inStock !== false &&
                 product.availability?.status !== 'out_of_stock' &&
                 product.isAvailable !== false;
-            const slugFromBase = extractStoreSlugFromUrl(baseUrl);
-            const storeSlugValue = product.storeSlug || product.retailerSlug || slugFromBase;
-            const store = product.storeName || product.retailerName || product.store?.name || storeNameFromSlug(storeSlugValue);
 
             return {
                 product_id: id,
@@ -472,13 +340,11 @@ async function main() {
                 brand: brand,
                 price: typeof price === 'number' ? price : parsePrice(price),
                 original_price: typeof originalPrice === 'number' ? originalPrice : parsePrice(originalPrice),
-                description: description,
                 size: size,
                 image_url: imageUrl ? cleanImageUrl(toAbs(imageUrl, baseUrl)) : null,
                 product_url: productUrl ? toAbs(productUrl, baseUrl) : null,
                 in_stock: inStock,
-                store: store,
-                store_slug: storeSlugValue,
+                store: 'Instacart',
                 timestamp: new Date().toISOString(),
                 extraction_method: 'apollo_graphql'
             };
@@ -501,8 +367,6 @@ async function main() {
         function extractFromHTML($, baseUrl) {
             const products = [];
             try {
-                const slugFromBase = extractStoreSlugFromUrl(baseUrl);
-                const storeName = storeNameFromSlug(slugFromBase);
                 // Multiple selector strategies for Instacart
                 const selectors = [
                     'a[href*="/products/"]',
@@ -550,8 +414,7 @@ async function main() {
                                 price: price,
                                 image_url: imgSrc ? cleanImageUrl(toAbs(imgSrc, baseUrl)) : null,
                                 product_url: fullUrl,
-                                store: storeName,
-                                store_slug: slugFromBase,
+                                store: 'Instacart',
                                 in_stock: true,
                                 timestamp: new Date().toISOString(),
                                 extraction_method: 'html_parsing'
@@ -579,13 +442,45 @@ async function main() {
             return products;
         }
 
-        // ==================== PLAYWRIGHT REQUEST METHOD ====================
+        // ==================== HTTP REQUEST METHOD (PRIORITY 1) ====================
+
+        async function fetchWithHTTP(url) {
+            try {
+                const response = await gotScraping({
+                    url,
+                    headers: {
+                        'User-Agent': getRandomUA(),
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Cache-Control': 'no-cache',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Upgrade-Insecure-Requests': '1',
+                    },
+                    timeout: { request: 30000 },
+                    retry: { limit: 2 },
+                    proxyUrl: proxyConf ? await proxyConf.newUrl() : undefined,
+                });
+
+                if (response.statusCode === 200) {
+                    return response.body;
+                }
+
+                log.warning(`HTTP request returned status ${response.statusCode}`);
+                return null;
+            } catch (e) {
+                log.warning(`HTTP request failed: ${e.message}`);
+                return null;
+            }
+        }
+
+        // ==================== PLAYWRIGHT FALLBACK (PRIORITY 2) ====================
 
         async function fetchWithPlaywright(url) {
-            usePlaywright = true;
-            log.info(`?? Using Playwright stealth mode for: ${url}`);
-
-            let htmlResult = null;
+            log.info(`🎭 Using Playwright stealth mode for: ${url}`);
 
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
@@ -619,32 +514,41 @@ async function main() {
                     },
                 ],
 
-                async requestHandler({ page }) {
+                async requestHandler({ page, request }) {
                     // Wait for content to load
                     await page.waitForLoadState('domcontentloaded');
-                    await page.waitForSelector('script#node-apollo-state', { timeout: 8000 }).catch(() => null);
-                    await page.waitForTimeout(500);
+                    await page.waitForTimeout(2000);
 
-                    // Get page HTML (fallback to outerHTML if navigation is in progress)
-                    try {
-                        htmlResult = await page.content();
-                    } catch {
-                        htmlResult = await page.evaluate(() => document.documentElement.outerHTML);
-                    }
+                    // Get page HTML
+                    const html = await page.content();
+                    request.userData.html = html;
                 },
             });
+
+            const result = { html: null };
 
             try {
                 await playwrightCrawler.run([{
                     url,
                     userData: { label: 'PLAYWRIGHT' },
                 }]);
+
+                // Get the result from the last request
+                const requestQueue = await playwrightCrawler.requestQueue;
+                if (requestQueue) {
+                    const { items } = await requestQueue.getHandledRequests();
+                    if (items.length > 0) {
+                        result.html = items[0].userData?.html;
+                    }
+                }
             } catch (e) {
                 log.warning(`Playwright crawl failed: ${e.message}`);
             }
 
-            return htmlResult;
+            return result.html;
         }
+
+        // ==================== MAIN SCRAPING LOGIC ====================
 
         async function scrapeUrl(url, pageNo = 1) {
             const products = [];
@@ -654,11 +558,23 @@ async function main() {
                 await sleep(DELAY_MS_VALUE);
             }
 
-            log.info(`?? Processing page ${pageNo}: ${url}`);
+            log.info(`📥 Processing page ${pageNo}: ${url}`);
 
-            const html = await fetchWithPlaywright(url);
+            // Try HTTP first (Priority 1)
+            let html = await fetchWithHTTP(url);
+
+            // If HTTP fails, use Playwright (Priority 2)
+            if (!html && !usePlaywright) {
+                log.info('⚠️ HTTP failed, switching to Playwright mode');
+                usePlaywright = true;
+            }
+
+            if (!html && usePlaywright) {
+                html = await fetchWithPlaywright(url);
+            }
+
             if (!html) {
-                log.error(`? Failed to fetch: ${url}`);
+                log.error(`❌ Failed to fetch: ${url}`);
                 return products;
             }
 
@@ -744,7 +660,7 @@ async function main() {
         log.info('📈 Stats saved to key-value store');
 
     } catch (error) {
-        log.exception(error);
+        log.error('Actor failed:', error);
         throw error;
     } finally {
         await Actor.exit();
@@ -752,6 +668,6 @@ async function main() {
 }
 
 main().catch(err => {
-    log.exception(err);
+    console.error('Fatal error:', err);
     process.exit(1);
 });
