@@ -50,9 +50,9 @@
       "editor": "number"
     },
     "extractDetails": {
-      "title": "Extract Product Details",
+      "title": "📄 Fetch Detail Pages",
       "type": "boolean",
-      "description": "If enabled, scraper visits individual product pages for detailed information including nutrition facts, ingredients, and reviews.",
+      "description": "Fetch individual product pages to get price, brand, original_price, unit_price, and retailer info (slower but more complete data).",
       "editor": "checkbox",
       "default": true
     },
@@ -60,13 +60,6 @@
       "title": "Include Nutrition Information",
       "type": "boolean",
       "description": "Extract nutrition facts and dietary information when available.",
-      "editor": "checkbox",
-      "default": true
-    },
-    "includeReviews": {
-      "title": "Include Review Counts",
-      "type": "boolean",
-      "description": "Extract customer review counts and ratings.",
       "editor": "checkbox",
       "default": true
     },
@@ -82,21 +75,6 @@
       "description": "Zipcode for location-based pricing (prices may vary by region).",
       "editor": "textfield",
       "default": "94105"
-    },
-    "dedupe": {
-      "title": "🔄 Remove Duplicates",
-      "type": "boolean",
-      "description": "Remove duplicate products by ID, URL, or name.",
-      "editor": "checkbox",
-      "default": true
-    },
-    "delay_ms": {
-      "title": "⏱️ Request Delay (ms)",
-      "type": "integer",
-      "description": "Delay between requests in milliseconds for stealth mode.",
-      "minimum": 1000,
-      "default": 2000,
-      "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",

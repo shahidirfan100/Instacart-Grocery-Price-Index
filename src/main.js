@@ -16,14 +16,16 @@ async function main() {
             results_wanted: RESULTS_WANTED_RAW = 100,
             max_pages: MAX_PAGES_RAW = 10,
             zipcode = '94105',
+            extractDetails = true,
             proxyConfiguration,
-            dedupe = true,
-            delay_ms: DELAY_MS = 2000,
         } = input;
+
+        // Hardcoded internal settings
+        const dedupe = true;  // Always remove duplicates
+        const DELAY_MS_VALUE = 2000;  // Fixed delay between requests
 
         const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 100;
         const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
-        const DELAY_MS_VALUE = Number.isFinite(+DELAY_MS) ? Math.max(1000, +DELAY_MS) : 2000;
 
         log.info(`🚀 Starting Instacart scraper | Target: ${RESULTS_WANTED} products | Max pages: ${MAX_PAGES}`);
 
@@ -536,7 +538,9 @@ async function main() {
 
         // ==================== HTTP REQUEST METHOD (PRIORITY 1) ====================
 
-        async function fetchWithHTTP(url) {
+        async function fetchWithHTTP(url, retryCount = 0) {
+            const MAX_RETRIES = 3;
+
             try {
                 const response = await gotScraping({
                     url,
@@ -551,6 +555,8 @@ async function main() {
                         'Sec-Fetch-Site': 'none',
                         'Sec-Fetch-User': '?1',
                         'Upgrade-Insecure-Requests': '1',
+                        'Referer': 'https://www.instacart.com/',
+                        'Origin': 'https://www.instacart.com',
                     },
                     timeout: { request: 30000 },
                     retry: { limit: 2 },
@@ -559,6 +565,26 @@ async function main() {
 
                 if (response.statusCode === 200) {
                     return response.body;
+                }
+
+                // Handle 202 (Accepted/Processing) - common for Instacart async pages
+                if (response.statusCode === 202) {
+                    // Check if 202 response still contains useful Apollo data
+                    if (response.body && response.body.includes('node-apollo-state')) {
+                        log.debug(`202 response contains Apollo data, using it`);
+                        return response.body;
+                    }
+
+                    // Retry with exponential backoff
+                    if (retryCount < MAX_RETRIES) {
+                        const delay = 1000 * Math.pow(2, retryCount); // 1s, 2s, 4s
+                        log.debug(`202 status, retrying in ${delay}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+                        await sleep(delay);
+                        return fetchWithHTTP(url, retryCount + 1);
+                    }
+
+                    log.debug(`202 after ${MAX_RETRIES} retries, returning response body anyway`);
+                    return response.body; // Return anyway, might have partial data
                 }
 
                 log.warning(`HTTP request returned status ${response.statusCode}`);
@@ -864,29 +890,33 @@ async function main() {
         }
 
         // ==================== ENRICH PRODUCTS WITH DETAIL PAGE DATA ====================
-        log.info(`🔍 Fetching detail pages for ${allProducts.length} products to get price/brand data...`);
+        if (extractDetails) {
+            log.info(`🔍 Fetching detail pages for ${allProducts.length} products to get price/brand data...`);
 
-        let enrichedCount = 0;
-        for (let i = 0; i < allProducts.length; i++) {
-            const product = allProducts[i];
+            let enrichedCount = 0;
+            for (let i = 0; i < allProducts.length; i++) {
+                const product = allProducts[i];
 
-            // Only fetch details if missing critical pricing data
-            if (!product.price || !product.brand) {
-                const enrichedProduct = await fetchProductDetails(product);
-                allProducts[i] = enrichedProduct;
+                // Only fetch details if missing critical pricing data
+                if (!product.price || !product.brand) {
+                    const enrichedProduct = await fetchProductDetails(product);
+                    allProducts[i] = enrichedProduct;
 
-                if (enrichedProduct.price || enrichedProduct.brand) {
-                    enrichedCount++;
-                }
+                    if (enrichedProduct.price || enrichedProduct.brand) {
+                        enrichedCount++;
+                    }
 
-                // Log progress every 5 products
-                if ((i + 1) % 5 === 0 || i === allProducts.length - 1) {
-                    log.info(`📊 Detail fetching progress: ${i + 1}/${allProducts.length} (enriched: ${enrichedCount})`);
+                    // Log progress every 5 products
+                    if ((i + 1) % 5 === 0 || i === allProducts.length - 1) {
+                        log.info(`📊 Detail fetching progress: ${i + 1}/${allProducts.length} (enriched: ${enrichedCount})`);
+                    }
                 }
             }
-        }
 
-        log.info(`✅ Enriched ${enrichedCount}/${allProducts.length} products with detail page data`);
+            log.info(`✅ Enriched ${enrichedCount}/${allProducts.length} products with detail page data`);
+        } else {
+            log.info(`⏩ Skipping detail page fetching (extractDetails is disabled)`);
+        }
 
         // Push all data in batches
         const BATCH_SIZE = 20;
