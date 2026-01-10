@@ -1,9 +1,8 @@
 // Instacart Grocery Price Index - Production-ready Apify Actor
-// Hybrid approach: HTTP + Apollo GraphQL (Priority 1) → Playwright stealth fallback (Priority 2)
+// Playwright-first + Apollo GraphQL parsing
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
-import { gotScraping } from 'got-scraping';
 
 await Actor.init();
 
@@ -742,45 +741,13 @@ async function main() {
             return products;
         }
 
-        // ==================== HTTP REQUEST METHOD (PRIORITY 1) ====================
-
-        async function fetchWithHTTP(url) {
-            try {
-                const response = await gotScraping({
-                    url,
-                    headers: {
-                        'User-Agent': getRandomUA(),
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'Cache-Control': 'no-cache',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                        'Sec-Fetch-User': '?1',
-                        'Upgrade-Insecure-Requests': '1',
-                    },
-                    timeout: { request: 30000 },
-                    retry: { limit: 2 },
-                    proxyUrl: proxyConf ? await proxyConf.newUrl() : undefined,
-                });
-
-                if (response.statusCode === 200) {
-                    return response.body;
-                }
-
-                log.warning(`HTTP request returned status ${response.statusCode}`);
-                return null;
-            } catch (e) {
-                log.warning(`HTTP request failed: ${e.message}`);
-                return null;
-            }
-        }
-
-        // ==================== PLAYWRIGHT FALLBACK (PRIORITY 2) ====================
+        // ==================== PLAYWRIGHT REQUEST METHOD ====================
 
         async function fetchWithPlaywright(url) {
-            log.info(`🎭 Using Playwright stealth mode for: ${url}`);
+            usePlaywright = true;
+            log.info(`?? Using Playwright stealth mode for: ${url}`);
+
+            let htmlResult = null;
 
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
@@ -814,38 +781,26 @@ async function main() {
                     },
                 ],
 
-                async requestHandler({ page, request }) {
+                async requestHandler({ page }) {
                     // Wait for content to load
                     await page.waitForLoadState('domcontentloaded');
                     await page.waitForTimeout(2000);
 
                     // Get page HTML
-                    const html = await page.content();
-                    request.userData.html = html;
+                    htmlResult = await page.content();
                 },
             });
-
-            const result = { html: null };
 
             try {
                 await playwrightCrawler.run([{
                     url,
                     userData: { label: 'PLAYWRIGHT' },
                 }]);
-
-                // Get the result from the last request
-                const requestQueue = await playwrightCrawler.requestQueue;
-                if (requestQueue) {
-                    const { items } = await requestQueue.getHandledRequests();
-                    if (items.length > 0) {
-                        result.html = items[0].userData?.html;
-                    }
-                }
             } catch (e) {
                 log.warning(`Playwright crawl failed: ${e.message}`);
             }
 
-            return result.html;
+            return htmlResult;
         }
 
         // ==================== PLAYWRIGHT DETAIL ENRICHMENT ====================
@@ -996,23 +951,11 @@ async function main() {
                 await sleep(DELAY_MS_VALUE);
             }
 
-            log.info(`📥 Processing page ${pageNo}: ${url}`);
+            log.info(`?? Processing page ${pageNo}: ${url}`);
 
-            // Try HTTP first (Priority 1)
-            let html = await fetchWithHTTP(url);
-
-            // If HTTP fails, use Playwright (Priority 2)
-            if (!html && !usePlaywright) {
-                log.info('⚠️ HTTP failed, switching to Playwright mode');
-                usePlaywright = true;
-            }
-
-            if (!html && usePlaywright) {
-                html = await fetchWithPlaywright(url);
-            }
-
+            const html = await fetchWithPlaywright(url);
             if (!html) {
-                log.error(`❌ Failed to fetch: ${url}`);
+                log.error(`? Failed to fetch: ${url}`);
                 return products;
             }
 
