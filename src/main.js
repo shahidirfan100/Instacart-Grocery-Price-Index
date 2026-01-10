@@ -719,8 +719,7 @@ async function main() {
 
         /**
          * Fetch product detail page and extract missing fields (price, brand, original_price, unit_price)
-         * Based on debugging: Detail pages HAVE node-apollo-state (URL-encoded JSON)
-         * Structure: Items:{hash} -> items[0] -> price.viewSection.itemCard
+         * Apollo state doesn't work via HTTP on detail pages - use JSON-LD and HTML regex only
          */
         async function fetchProductDetails(product) {
             if (!product.product_url) return product;
@@ -743,152 +742,82 @@ async function main() {
 
                 const $ = cheerioLoad(html);
 
-                // ========== STRATEGY 1: Extract from Apollo State (PRIMARY) ==========
-                // Detail pages DO have node-apollo-state (confirmed via debugging)
-                const apolloData = extractApolloState($);
+                // ========== STRATEGY 1: Extract from JSON-LD (PRIMARY - confirmed working) ==========
+                $('script[type="application/ld+json"]').each((_, el) => {
+                    try {
+                        const ldJson = JSON.parse($(el).html() || '{}');
 
-                if (apolloData) {
-                    // Look for Items:{hash} keys which contain the product data
-                    for (const [key, value] of Object.entries(apolloData)) {
-                        if (!value || typeof value !== 'object') continue;
+                        // Check for Product type directly or in @graph
+                        const productLd = ldJson['@type'] === 'Product' ? ldJson :
+                            (ldJson['@graph']?.find(item => item['@type'] === 'Product') || null);
 
-                        // Strategy 1a: Look for Items: keys (main product data)
-                        if (key.startsWith('Items:')) {
-                            // Items keys contain query parameters as nested keys
-                            for (const [queryKey, queryData] of Object.entries(value)) {
-                                if (!queryData || typeof queryData !== 'object') continue;
-
-                                const items = queryData.items || [];
-                                if (!Array.isArray(items) || items.length === 0) continue;
-
-                                const item = items[0];
-                                if (!item) continue;
-
-                                // Extract price from viewSection structure
-                                // Path: item.price.viewSection.itemCard.priceString
-                                const priceSection = item.price?.viewSection || {};
-                                const itemCard = priceSection.itemCard || {};
-
-                                // Current Price
-                                if (!product.price) {
-                                    const priceValue = priceSection.priceValueString ||
-                                        itemCard.priceString ||
-                                        item.price?.price ||
-                                        item.price?.priceString || null;
-                                    if (priceValue) {
-                                        product.price = parsePrice(priceValue);
-                                    }
+                        if (productLd) {
+                            // Price from JSON-LD offers
+                            if (!product.price) {
+                                const offers = productLd.offers || {};
+                                const priceVal = offers.price || offers.lowPrice || productLd.price || null;
+                                if (priceVal) {
+                                    product.price = typeof priceVal === 'number' ? priceVal : parsePrice(priceVal);
+                                    log.debug(`✅ Got price from JSON-LD: ${product.price}`);
                                 }
+                            }
 
-                                // Original/Full Price (before discount)
-                                if (!product.original_price) {
-                                    const origPrice = itemCard.fullPriceString ||
-                                        itemCard.originalPrice ||
-                                        priceSection.originalPriceString || null;
-                                    if (origPrice) {
-                                        product.original_price = parsePrice(origPrice);
-                                    }
+                            // Brand from JSON-LD
+                            if (!product.brand) {
+                                const brandLd = productLd.brand;
+                                if (brandLd) {
+                                    product.brand = typeof brandLd === 'object' ? brandLd.name : brandLd;
+                                    log.debug(`✅ Got brand from JSON-LD: ${product.brand}`);
                                 }
+                            }
 
-                                // Unit Price (e.g., "$0.99 / lb")
-                                if (!product.unit_price) {
-                                    const unitP = itemCard.pricingUnitString ||
-                                        itemCard.secondaryPriceString ||
-                                        priceSection.unitPrice || null;
-                                    if (unitP) {
-                                        product.unit_price = unitP;
-                                    }
-                                }
-
-                                // Brand
-                                if (!product.brand) {
-                                    const brandValue = item.brandName || item.brand || null;
-                                    if (brandValue) {
-                                        product.brand = brandValue;
-                                    }
-                                }
-
-                                if (product.price) {
-                                    log.debug(`✅ Got price from Items: key - ${product.price}`);
+                            // Category from JSON-LD
+                            if (!product.category || product.category === 'Fresh Produce') {
+                                const categoryLd = productLd.category;
+                                if (categoryLd) {
+                                    product.category = categoryLd;
                                 }
                             }
                         }
-
-                        // Strategy 1b: Look for GetRetailerNameBySlug for retailer name
-                        if (key.startsWith('GetRetailerNameBySlug:') && (product.store === 'Instacart' || !product.store)) {
-                            for (const [queryKey, queryData] of Object.entries(value)) {
-                                const retailerName = queryData?.retailer?.name || null;
-                                if (retailerName) {
-                                    product.store = retailerName;
-                                    log.debug(`✅ Got retailer: ${retailerName}`);
-                                }
-                            }
-                        }
+                    } catch (e) {
+                        // Ignore JSON-LD parsing errors
                     }
-                }
+                });
 
-                // ========== STRATEGY 2: Extract from JSON-LD (Fallback) ==========
+                // ========== STRATEGY 2: Extract from HTML regex (FALLBACK - confirmed working) ==========
+                const bodyText = $('body').text();
+
+                // Price from HTML
                 if (!product.price) {
-                    $('script[type="application/ld+json"]').each((_, el) => {
-                        try {
-                            const ldJson = JSON.parse($(el).html() || '{}');
-
-                            // Check for Product type directly or in @graph
-                            const productLd = ldJson['@type'] === 'Product' ? ldJson :
-                                (ldJson['@graph']?.find(item => item['@type'] === 'Product') || null);
-
-                            if (productLd) {
-                                // Price from JSON-LD offers
-                                if (!product.price) {
-                                    const offers = productLd.offers || {};
-                                    const priceVal = offers.price || offers.lowPrice || productLd.price || null;
-                                    if (priceVal) {
-                                        product.price = typeof priceVal === 'number' ? priceVal : parsePrice(priceVal);
-                                        log.debug(`✅ Got price from JSON-LD: ${product.price}`);
-                                    }
-                                }
-
-                                // Brand from JSON-LD
-                                if (!product.brand) {
-                                    const brandLd = productLd.brand;
-                                    if (brandLd) {
-                                        product.brand = typeof brandLd === 'object' ? brandLd.name : brandLd;
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Ignore JSON-LD parsing errors
-                        }
-                    });
-                }
-
-                // ========== STRATEGY 3: Extract from HTML (Last resort) ==========
-                if (!product.price) {
-                    // Look for price text containing $ and "each" or numeric patterns
                     const pricePatterns = [
                         /\$(\d+\.?\d*)\s*each/i,
+                        /\$(\d+\.?\d*)\s*\(/,  // Match "$0.42 (" before "est."
                         /\$(\d+\.?\d*)/,
                     ];
 
-                    const bodyText = $('body').text();
                     for (const pattern of pricePatterns) {
                         const match = bodyText.match(pattern);
                         if (match && match[1]) {
                             product.price = parseFloat(match[1]);
-                            log.debug(`✅ Got price from HTML regex: ${product.price}`);
+                            log.debug(`✅ Got price from HTML: ${product.price}`);
                             break;
                         }
                     }
                 }
 
-                // Extract unit price from HTML if still missing
+                // Unit price from HTML (e.g., "$0.99 / lb")
                 if (!product.unit_price) {
                     const unitPattern = /\$(\d+\.?\d*)\s*\/\s*(\w+)/;
-                    const bodyText = $('body').text();
                     const match = bodyText.match(unitPattern);
                     if (match) {
-                        product.unit_price = match[0]; // e.g., "$0.99 / lb"
+                        product.unit_price = match[0].trim();
+                        log.debug(`✅ Got unit price from HTML: ${product.unit_price}`);
                     }
+                }
+
+                // Retailer from URL if still Instacart
+                if (product.store === 'Instacart' || !product.store) {
+                    product.store = extractRetailerFromUrl(product.product_url);
                 }
 
             } catch (e) {
