@@ -196,6 +196,32 @@ async function main() {
                         }
                     }
 
+                    // ========== NEW: Handle Items: structure for STORE-SPECIFIC pages ==========
+                    // Store pages (e.g., /store/safeway/...) use Items: keys with items[] arrays
+                    // These contain PRICE data at: item.price.viewSection.itemCard.priceString
+                    if (key.startsWith('Items:')) {
+                        log.debug(`Found store Items key: ${key}`);
+
+                        // Items: value is an object with query parameters as keys
+                        for (const [queryKey, queryData] of Object.entries(value)) {
+                            if (!queryData || typeof queryData !== 'object') continue;
+
+                            // Get items array
+                            const itemsArray = queryData?.items || [];
+
+                            if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+                                log.info(`Found ${itemsArray.length} products in ${key} (store page)`);
+
+                                for (const item of itemsArray) {
+                                    const product = extractLandingProduct(item, baseUrl);
+                                    if (product.name || product.product_id) {
+                                        products.push(product);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Also check for direct Product: keys (fallback for other Apollo structures)
                     if (key.startsWith('Product:') || key.startsWith('Item:') ||
                         value.__typename === 'Product' || value.__typename === 'Item') {
@@ -745,17 +771,17 @@ async function main() {
 
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
-                maxRequestRetries: 2,
-                requestHandlerTimeoutSecs: 60,
-                navigationTimeoutSecs: 45,
-                maxConcurrency: 2, // Reduced for stability
+                maxRequestRetries: 1, // Fewer retries for speed
+                requestHandlerTimeoutSecs: 30, // Faster timeout
+                navigationTimeoutSecs: 20, // Faster navigation timeout
+                maxConcurrency: 4, // Higher concurrency for speed
                 headless: true,
                 useSessionPool: true,
                 persistCookiesPerSession: true,
 
                 browserPoolOptions: {
-                    maxOpenPagesPerBrowser: 3,
-                    retireBrowserAfterPageCount: 10,
+                    maxOpenPagesPerBrowser: 5, // More pages per browser
+                    retireBrowserAfterPageCount: 20, // Retire less frequently
                 },
 
                 launchContext: {
@@ -775,16 +801,26 @@ async function main() {
                             '--mute-audio',
                             '--no-first-run',
                             '--ignore-certificate-errors',
+                            '--disable-gpu', // Faster rendering
+                            '--disable-software-rasterizer',
                         ],
                     },
                 },
 
                 preNavigationHooks: [
                     async ({ page, request }) => {
-                        // Block only heavy media resources (keep CSS for page to load properly)
+                        // Block ALL non-essential resources for maximum speed
                         await page.route('**/*', (route) => {
                             const resourceType = route.request().resourceType();
-                            if (['image', 'media', 'font'].includes(resourceType)) {
+                            const url = route.request().url();
+                            // Only allow document and XHR/fetch for data
+                            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                                return route.abort();
+                            }
+                            // Block tracking/analytics scripts
+                            if (url.includes('analytics') || url.includes('tracking') ||
+                                url.includes('segment') || url.includes('gtag') ||
+                                url.includes('facebook') || url.includes('google-analytics')) {
                                 return route.abort();
                             }
                             return route.continue();
@@ -811,29 +847,15 @@ async function main() {
                     const productIndex = request.userData.productIndex;
 
                     try {
-                        // Wait for DOM only (faster)
+                        // Wait for DOM only (faster than load/networkidle)
                         await page.waitForLoadState('domcontentloaded');
-                        await page.waitForTimeout(800);
+                        await page.waitForTimeout(300); // Minimal wait for Apollo to populate
 
                         // Extract data using JavaScript in browser context
                         const extractedData = await page.evaluate(() => {
-                            const result = { price: null, brand: null, unitPrice: null, store: null };
+                            const result = { price: null, originalPrice: null, brand: null, unitPrice: null, store: null };
 
-                            // Try JSON-LD first (fastest)
-                            const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
-                            for (const script of ldScripts) {
-                                try {
-                                    const data = JSON.parse(script.textContent || '{}');
-                                    const product = data['@type'] === 'Product' ? data :
-                                        (data['@graph']?.find(i => i['@type'] === 'Product') || null);
-                                    if (product) {
-                                        if (product.offers?.price) result.price = parseFloat(product.offers.price);
-                                        if (product.brand) result.brand = typeof product.brand === 'object' ? product.brand.name : product.brand;
-                                    }
-                                } catch (e) { }
-                            }
-
-                            // Try Apollo state
+                            // Try Apollo state FIRST (most reliable for Instacart)
                             const apolloEl = document.getElementById('node-apollo-state');
                             if (apolloEl) {
                                 try {
@@ -843,28 +865,53 @@ async function main() {
                                             for (const queryData of Object.values(value)) {
                                                 if (queryData?.items?.[0]) {
                                                     const item = queryData.items[0];
-                                                    const itemCard = item.price?.viewSection?.itemCard || {};
+                                                    const priceSection = item.price?.viewSection || {};
+                                                    const itemCard = priceSection.itemCard || {};
+                                                    const itemDetails = priceSection.itemDetails || {};
+
+                                                    // Price from itemCard
                                                     if (!result.price && itemCard.priceString) {
                                                         result.price = parseFloat(itemCard.priceString.replace(/[^0-9.]/g, ''));
                                                     }
-                                                    if (!result.unitPrice && itemCard.pricingUnitString) {
-                                                        result.unitPrice = itemCard.pricingUnitString;
+                                                    // Original price (was price)
+                                                    if (!result.originalPrice && itemCard.plainFullPriceString) {
+                                                        result.originalPrice = parseFloat(itemCard.plainFullPriceString.replace(/[^0-9.]/g, ''));
                                                     }
+                                                    // Unit price from itemDetails
+                                                    if (!result.unitPrice && itemDetails.pricePerUnitString) {
+                                                        result.unitPrice = itemDetails.pricePerUnitString;
+                                                    }
+                                                    // Brand
                                                     if (!result.brand && item.brandName) {
                                                         result.brand = item.brandName;
                                                     }
                                                 }
                                             }
                                         }
-                                        if (key.startsWith('GetRetailerNameBySlug:') && typeof value === 'object') {
-                                            for (const queryData of Object.values(value)) {
-                                                if (queryData?.retailer?.name) {
-                                                    result.store = queryData.retailer.name;
-                                                }
+                                        // Store name
+                                        if (key.startsWith('RetailersRetailer:') && typeof value === 'object') {
+                                            if (!result.store && value.name) {
+                                                result.store = value.name;
                                             }
                                         }
                                     }
                                 } catch (e) { }
+                            }
+
+                            // Fallback: Try JSON-LD
+                            if (!result.price) {
+                                const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                                for (const script of ldScripts) {
+                                    try {
+                                        const data = JSON.parse(script.textContent || '{}');
+                                        const product = data['@type'] === 'Product' ? data :
+                                            (data['@graph']?.find(i => i['@type'] === 'Product') || null);
+                                        if (product) {
+                                            if (product.offers?.price) result.price = parseFloat(product.offers.price);
+                                            if (product.brand) result.brand = typeof product.brand === 'object' ? product.brand.name : product.brand;
+                                        }
+                                    } catch (e) { }
+                                }
                             }
 
                             // Fallback: Extract from visible text
@@ -887,7 +934,8 @@ async function main() {
                         extractedDataMap.set(productUrl, { index: productIndex, data: extractedData });
 
                         if (extractedData.price) {
-                            log.info(`✅ [${productIndex + 1}] Price: $${extractedData.price} | Brand: ${extractedData.brand || 'N/A'}`);
+                            const origStr = extractedData.originalPrice ? ` (was $${extractedData.originalPrice})` : '';
+                            log.info(`✅ [${productIndex + 1}] $${extractedData.price}${origStr} | ${extractedData.brand || 'Unknown'} | ${extractedData.unitPrice || ''}`);
                         }
 
                     } catch (e) {
@@ -914,6 +962,7 @@ async function main() {
                 for (const [url, { index, data }] of extractedDataMap) {
                     if (products[index]) {
                         if (data.price) products[index].price = data.price;
+                        if (data.originalPrice) products[index].original_price = data.originalPrice;
                         if (data.brand) products[index].brand = data.brand;
                         if (data.unitPrice) products[index].unit_price = data.unitPrice;
                         if (data.store) products[index].store = data.store;
