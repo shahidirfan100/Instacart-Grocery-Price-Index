@@ -715,116 +715,166 @@ async function main() {
             return products;
         }
 
-        // ==================== FETCH PRODUCT DETAIL PAGE ====================
+        // ==================== FETCH PRODUCT DETAIL PAGES WITH PLAYWRIGHT ====================
 
         /**
-         * Fetch product detail page and extract missing fields (price, brand, original_price, unit_price)
-         * Apollo state doesn't work via HTTP on detail pages - use JSON-LD and HTML regex only
+         * Fetch multiple product detail pages in parallel using Playwright
+         * HTTP is blocked on detail pages - must use browser rendering
          */
-        async function fetchProductDetails(product) {
-            if (!product.product_url) return product;
+        async function fetchProductDetailsBatch(products) {
+            if (!products.length) return products;
+
+            log.info(`🎭 Using Playwright to fetch ${products.length} detail pages...`);
+
+            const playwrightCrawler = new PlaywrightCrawler({
+                proxyConfiguration: proxyConf,
+                maxRequestRetries: 1,
+                requestHandlerTimeoutSecs: 30,
+                maxConcurrency: 3, // Parallel fetching - 3 at a time
+                headless: true,
+
+                launchContext: {
+                    launchOptions: {
+                        args: [
+                            '--disable-blink-features=AutomationControlled',
+                            '--disable-dev-shm-usage',
+                            '--no-sandbox',
+                        ],
+                    },
+                },
+
+                preNavigationHooks: [
+                    async ({ page }) => {
+                        // Stealth: Override navigator properties
+                        await page.addInitScript(() => {
+                            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                            window.chrome = { runtime: {} };
+                        });
+
+                        await page.setExtraHTTPHeaders({
+                            'Accept-Language': 'en-US,en;q=0.9',
+                        });
+                    },
+                ],
+
+                async requestHandler({ page, request }) {
+                    const productIndex = request.userData.productIndex;
+
+                    try {
+                        // Wait for page content
+                        await page.waitForLoadState('domcontentloaded');
+                        await page.waitForTimeout(1500);
+
+                        // Extract data using JavaScript in browser context
+                        const extractedData = await page.evaluate(() => {
+                            const result = { price: null, brand: null, unitPrice: null, store: null };
+
+                            // Try JSON-LD first
+                            const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                            for (const script of ldScripts) {
+                                try {
+                                    const data = JSON.parse(script.textContent || '{}');
+                                    const product = data['@type'] === 'Product' ? data :
+                                        (data['@graph']?.find(i => i['@type'] === 'Product') || null);
+                                    if (product) {
+                                        if (product.offers?.price) result.price = parseFloat(product.offers.price);
+                                        if (product.brand) result.brand = typeof product.brand === 'object' ? product.brand.name : product.brand;
+                                    }
+                                } catch (e) { }
+                            }
+
+                            // Try Apollo state (rendered in browser)
+                            const apolloEl = document.getElementById('node-apollo-state');
+                            if (apolloEl && (!result.price || !result.brand)) {
+                                try {
+                                    const apolloData = JSON.parse(decodeURIComponent(apolloEl.textContent));
+                                    for (const [key, value] of Object.entries(apolloData)) {
+                                        if (key.startsWith('Items:') && typeof value === 'object') {
+                                            for (const queryData of Object.values(value)) {
+                                                if (queryData?.items?.[0]) {
+                                                    const item = queryData.items[0];
+                                                    const itemCard = item.price?.viewSection?.itemCard || {};
+                                                    if (!result.price && itemCard.priceString) {
+                                                        result.price = parseFloat(itemCard.priceString.replace(/[^0-9.]/g, ''));
+                                                    }
+                                                    if (!result.unitPrice && itemCard.pricingUnitString) {
+                                                        result.unitPrice = itemCard.pricingUnitString;
+                                                    }
+                                                    if (!result.brand && item.brandName) {
+                                                        result.brand = item.brandName;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (key.startsWith('GetRetailerNameBySlug:') && typeof value === 'object') {
+                                            for (const queryData of Object.values(value)) {
+                                                if (queryData?.retailer?.name) {
+                                                    result.store = queryData.retailer.name;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (e) { }
+                            }
+
+                            // Fallback: Extract from visible text
+                            if (!result.price) {
+                                const bodyText = document.body.innerText;
+                                const priceMatch = bodyText.match(/\$(\d+\.?\d*)\s*each/i) || bodyText.match(/\$(\d+\.?\d*)/);
+                                if (priceMatch) result.price = parseFloat(priceMatch[1]);
+                            }
+
+                            if (!result.unitPrice) {
+                                const bodyText = document.body.innerText;
+                                const unitMatch = bodyText.match(/\$(\d+\.?\d*)\s*\/\s*(\w+)/);
+                                if (unitMatch) result.unitPrice = unitMatch[0];
+                            }
+
+                            return result;
+                        });
+
+                        // Store extracted data in request
+                        request.userData.extractedData = extractedData;
+                        log.debug(`✅ Extracted from detail page: price=${extractedData.price}, brand=${extractedData.brand}`);
+
+                    } catch (e) {
+                        log.debug(`Detail page extraction failed: ${e.message}`);
+                        request.userData.extractedData = null;
+                    }
+                },
+            });
+
+            // Build requests for all products
+            const requests = products.map((product, index) => ({
+                url: product.product_url,
+                userData: { productIndex: index, productName: product.name },
+            })).filter(r => r.url);
 
             try {
-                // Add small delay between detail page requests
-                await sleep(500 + Math.random() * 500);
+                await playwrightCrawler.run(requests);
 
-                log.debug(`📄 Fetching details: ${product.product_url}`);
-
-                let html = await fetchWithHTTP(product.product_url);
-                if (!html && usePlaywright) {
-                    html = await fetchWithPlaywright(product.product_url);
-                }
-
-                if (!html) {
-                    log.debug(`Failed to fetch details for: ${product.name}`);
-                    return product;
-                }
-
-                const $ = cheerioLoad(html);
-
-                // ========== STRATEGY 1: Extract from JSON-LD (PRIMARY - confirmed working) ==========
-                $('script[type="application/ld+json"]').each((_, el) => {
-                    try {
-                        const ldJson = JSON.parse($(el).html() || '{}');
-
-                        // Check for Product type directly or in @graph
-                        const productLd = ldJson['@type'] === 'Product' ? ldJson :
-                            (ldJson['@graph']?.find(item => item['@type'] === 'Product') || null);
-
-                        if (productLd) {
-                            // Price from JSON-LD offers
-                            if (!product.price) {
-                                const offers = productLd.offers || {};
-                                const priceVal = offers.price || offers.lowPrice || productLd.price || null;
-                                if (priceVal) {
-                                    product.price = typeof priceVal === 'number' ? priceVal : parsePrice(priceVal);
-                                    log.debug(`✅ Got price from JSON-LD: ${product.price}`);
-                                }
-                            }
-
-                            // Brand from JSON-LD
-                            if (!product.brand) {
-                                const brandLd = productLd.brand;
-                                if (brandLd) {
-                                    product.brand = typeof brandLd === 'object' ? brandLd.name : brandLd;
-                                    log.debug(`✅ Got brand from JSON-LD: ${product.brand}`);
-                                }
-                            }
-
-                            // Category from JSON-LD
-                            if (!product.category || product.category === 'Fresh Produce') {
-                                const categoryLd = productLd.category;
-                                if (categoryLd) {
-                                    product.category = categoryLd;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        // Ignore JSON-LD parsing errors
-                    }
-                });
-
-                // ========== STRATEGY 2: Extract from HTML regex (FALLBACK - confirmed working) ==========
-                const bodyText = $('body').text();
-
-                // Price from HTML
-                if (!product.price) {
-                    const pricePatterns = [
-                        /\$(\d+\.?\d*)\s*each/i,
-                        /\$(\d+\.?\d*)\s*\(/,  // Match "$0.42 (" before "est."
-                        /\$(\d+\.?\d*)/,
-                    ];
-
-                    for (const pattern of pricePatterns) {
-                        const match = bodyText.match(pattern);
-                        if (match && match[1]) {
-                            product.price = parseFloat(match[1]);
-                            log.debug(`✅ Got price from HTML: ${product.price}`);
-                            break;
+                // Merge extracted data back into products
+                const requestQueue = await playwrightCrawler.requestQueue;
+                if (requestQueue) {
+                    const { items } = await requestQueue.getHandledRequests();
+                    for (const request of items) {
+                        const index = request.userData.productIndex;
+                        const extracted = request.userData.extractedData;
+                        if (extracted && products[index]) {
+                            if (extracted.price) products[index].price = extracted.price;
+                            if (extracted.brand) products[index].brand = extracted.brand;
+                            if (extracted.unitPrice) products[index].unit_price = extracted.unitPrice;
+                            if (extracted.store) products[index].store = extracted.store;
                         }
                     }
                 }
-
-                // Unit price from HTML (e.g., "$0.99 / lb")
-                if (!product.unit_price) {
-                    const unitPattern = /\$(\d+\.?\d*)\s*\/\s*(\w+)/;
-                    const match = bodyText.match(unitPattern);
-                    if (match) {
-                        product.unit_price = match[0].trim();
-                        log.debug(`✅ Got unit price from HTML: ${product.unit_price}`);
-                    }
-                }
-
-                // Retailer from URL if still Instacart
-                if (product.store === 'Instacart' || !product.store) {
-                    product.store = extractRetailerFromUrl(product.product_url);
-                }
-
             } catch (e) {
-                log.debug(`Error fetching product details: ${e.message}`);
+                log.warning(`Batch detail fetching failed: ${e.message}`);
             }
 
-            return product;
+            return products;
         }
 
         // ==================== RUN SCRAPER ====================
@@ -868,29 +918,21 @@ async function main() {
 
         // ==================== ENRICH PRODUCTS WITH DETAIL PAGE DATA ====================
         if (extractDetails) {
-            log.info(`🔍 Fetching detail pages for ${allProducts.length} products to get price/brand data...`);
+            // Filter products that need detail fetching
+            const productsNeedingDetails = allProducts.filter(p => !p.price || !p.brand);
 
-            let enrichedCount = 0;
-            for (let i = 0; i < allProducts.length; i++) {
-                const product = allProducts[i];
+            if (productsNeedingDetails.length > 0) {
+                log.info(`🔍 Fetching detail pages for ${productsNeedingDetails.length} products missing price/brand...`);
 
-                // Only fetch details if missing critical pricing data
-                if (!product.price || !product.brand) {
-                    const enrichedProduct = await fetchProductDetails(product);
-                    allProducts[i] = enrichedProduct;
+                // Use batch parallel Playwright fetching
+                await fetchProductDetailsBatch(productsNeedingDetails);
 
-                    if (enrichedProduct.price || enrichedProduct.brand) {
-                        enrichedCount++;
-                    }
-
-                    // Log progress every 5 products
-                    if ((i + 1) % 5 === 0 || i === allProducts.length - 1) {
-                        log.info(`📊 Detail fetching progress: ${i + 1}/${allProducts.length} (enriched: ${enrichedCount})`);
-                    }
-                }
+                // Count enriched products
+                const enrichedCount = productsNeedingDetails.filter(p => p.price || p.brand).length;
+                log.info(`✅ Enriched ${enrichedCount}/${productsNeedingDetails.length} products with detail page data`);
+            } else {
+                log.info(`✅ All products already have price/brand data, skipping detail fetching`);
             }
-
-            log.info(`✅ Enriched ${enrichedCount}/${allProducts.length} products with detail page data`);
         } else {
             log.info(`⏩ Skipping detail page fetching (extractDetails is disabled)`);
         }
