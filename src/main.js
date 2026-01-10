@@ -96,7 +96,9 @@ async function main() {
         if (startUrl && !initial.some(u => u.url === startUrl)) initial.push({ url: startUrl });
         if (!initial.length) initial.push({ url: 'https://www.instacart.com/categories/316-food/317-fresh-produce' });
 
-        const storeSlug = extractStoreSlugFromUrl(initial[0]?.url || startUrl);
+        const storeSlug = initial
+            .map(item => extractStoreSlugFromUrl(typeof item === 'string' ? item : item?.url))
+            .find(Boolean) || extractStoreSlugFromUrl(startUrl);
         if (!storeSlug) {
             log.warning('?? Start URL is not store-specific. Prices/availability may be missing. Use /store/{slug}/... URLs.');
         }
@@ -237,6 +239,23 @@ async function main() {
                         }
                     }
 
+                    if (key.startsWith('Items:') || key.includes('Items')) {
+                        for (const queryData of Object.values(value)) {
+                            if (!queryData || typeof queryData !== 'object') continue;
+                            const itemsArray = queryData?.items || queryData?.items?.items || [];
+                            if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+                                extractProductsFromArray(itemsArray, apolloData, baseUrl, products);
+                            }
+                        }
+                    }
+
+                    if (key.toLowerCase().includes('search')) {
+                        for (const queryData of Object.values(value)) {
+                            if (!queryData || typeof queryData !== 'object') continue;
+                            extractProductsFromSearchData(queryData, apolloData, baseUrl, products);
+                        }
+                    }
+
                     // Also check for direct Product: keys (fallback for other Apollo structures)
                     if (key.startsWith('Product:') || key.startsWith('Item:') ||
                         value.__typename === 'Product' || value.__typename === 'Item') {
@@ -259,6 +278,9 @@ async function main() {
                                 products.push(product);
                             }
                         }
+                    }
+                    if (String(queryKey).toLowerCase().includes('search')) {
+                        extractProductsFromSearchData(queryValue, apolloData, baseUrl, products);
                     }
                 }
 
@@ -386,6 +408,55 @@ async function main() {
             }
 
             return results;
+        }
+
+        function resolveApolloItem(item, apolloData) {
+            if (!item) return null;
+            if (item.__ref && apolloData[item.__ref]) return apolloData[item.__ref];
+            if (item.item?.__ref && apolloData[item.item.__ref]) return apolloData[item.item.__ref];
+            if (item.product?.__ref && apolloData[item.product.__ref]) return apolloData[item.product.__ref];
+            if (item.item) return item.item;
+            if (item.product) return item.product;
+            return item;
+        }
+
+        function extractProductsFromArray(arr, apolloData, baseUrl, products) {
+            for (const raw of arr) {
+                const resolved = resolveApolloItem(raw, apolloData);
+                if (!resolved || typeof resolved !== 'object') continue;
+                const product = resolved.price?.viewSection
+                    ? extractLandingProduct(resolved, baseUrl)
+                    : extractProductFields(resolved, baseUrl);
+                if (product.name || product.product_id) products.push(product);
+            }
+        }
+
+        function collectSearchArrays(node, arrays, depth = 0) {
+            if (!node || depth > 4) return;
+            if (Array.isArray(node)) {
+                arrays.push(node);
+                return;
+            }
+            if (typeof node !== 'object') return;
+
+            for (const [key, value] of Object.entries(node)) {
+                if (Array.isArray(value)) {
+                    const k = key.toLowerCase();
+                    if (k.includes('item') || k.includes('result') || k.includes('hit') || k.includes('product')) {
+                        arrays.push(value);
+                    }
+                } else if (value && typeof value === 'object') {
+                    collectSearchArrays(value, arrays, depth + 1);
+                }
+            }
+        }
+
+        function extractProductsFromSearchData(data, apolloData, baseUrl, products) {
+            const arrays = [];
+            collectSearchArrays(data, arrays);
+            for (const arr of arrays) {
+                extractProductsFromArray(arr, apolloData, baseUrl, products);
+            }
         }
 
         /**
@@ -900,7 +971,7 @@ async function main() {
             const requests = products.map((product) => {
                 const baseUrl = product.product_url ||
                     (product.product_id ? `https://www.instacart.com/products/${product.product_id}` : '');
-                const productUrl = buildStoreProductUrl(baseUrl, storeSlug);
+                const productUrl = buildStoreProductUrl(baseUrl, product.store_slug || storeSlug);
                 if (!product.product_url) product.product_url = productUrl;
                 return {
                     url: productUrl,
