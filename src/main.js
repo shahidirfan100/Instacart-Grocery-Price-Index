@@ -5,6 +5,46 @@ import { CheerioCrawler, PlaywrightCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { gotScraping } from 'got-scraping';
 
+const PRIORITIZED_TODO = [
+    {
+        priority: 'P0',
+        title: 'Identify product detail JSON source and required context',
+        details: 'Capture network calls for product pages; pinpoint GraphQL/REST/_next/data endpoints; confirm required cookies/headers (store/zipcode/session) and verify price/availability in the response.',
+    },
+    {
+        priority: 'P1',
+        title: 'Implement HTTP JSON detail fetcher (primary path)',
+        details: 'Add a gotScraping-based fetcher for detail data, reuse session cookies, parse price/unit price/brand/stock/store from JSON, and merge into listing items.',
+    },
+    {
+        priority: 'P1',
+        title: 'Add _next/data fallback for detail pages',
+        details: 'Extract buildId from HTML (__NEXT_DATA__ or next-data) and request /_next/data/{buildId}/products/{id}.json (or store path), then parse product fields.',
+    },
+    {
+        priority: 'P2',
+        title: 'Harden HTML-only fallback',
+        details: 'Parse JSON-LD Product/Offer and semantic selectors via Cheerio; handle missing fields with safe defaults and keep it as secondary to JSON endpoints.',
+    },
+    {
+        priority: 'P2',
+        title: 'Ensure location + store context for prices',
+        details: 'Bootstrap location (zip/store) via internal location API or cookies, persist session per crawl, and validate retailer/store identifiers for detail requests.',
+    },
+    {
+        priority: 'P3',
+        title: 'Production hardening and stealth',
+        details: 'Add request queue, 429/202 backoff, retry budgets, and keep Playwright as last-resort with aggressive resource blocking and low concurrency.',
+    },
+];
+
+const logTodoList = () => {
+    log.info('Prioritized to-do list for detail-page reliability and production hardening:');
+    for (const item of PRIORITIZED_TODO) {
+        log.info(`${item.priority} - ${item.title} ${item.details}`);
+    }
+};
+
 await Actor.init();
 
 async function main() {
@@ -17,6 +57,7 @@ async function main() {
             max_pages: MAX_PAGES_RAW = 10,
             zipcode = '94105',
             extractDetails = false,
+            printTodoList = false,
             proxyConfiguration,
         } = input;
 
@@ -28,6 +69,8 @@ async function main() {
         const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
 
         log.info(`🚀 Starting Instacart scraper | Target: ${RESULTS_WANTED} products | Max pages: ${MAX_PAGES}`);
+
+        if (printTodoList) logTodoList();
 
         // Stealth user agents
         const USER_AGENTS = [
@@ -640,11 +683,16 @@ async function main() {
         async function fetchWithPlaywright(url) {
             log.info(`🎭 Using Playwright stealth mode for: ${url}`);
 
+            // Use closure variable to capture HTML from the request handler
+            let extractedHtml = null;
+
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
                 maxRequestRetries: 2,
                 requestHandlerTimeoutSecs: 60,
+                navigationTimeoutSecs: 30,
                 headless: true,
+                maxConcurrency: 1,
 
                 launchContext: {
                     launchOptions: {
@@ -652,12 +700,22 @@ async function main() {
                             '--disable-blink-features=AutomationControlled',
                             '--disable-dev-shm-usage',
                             '--no-sandbox',
+                            '--disable-setuid-sandbox',
                         ],
                     },
                 },
 
                 preNavigationHooks: [
                     async ({ page }) => {
+                        // Block heavy resources for speed
+                        await page.route('**/*', (route) => {
+                            const resourceType = route.request().resourceType();
+                            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                                return route.abort();
+                            }
+                            return route.continue();
+                        });
+
                         // Stealth: Override navigator properties
                         await page.addInitScript(() => {
                             Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -675,35 +733,25 @@ async function main() {
                 async requestHandler({ page, request }) {
                     // Wait for content to load
                     await page.waitForLoadState('domcontentloaded');
-                    await page.waitForTimeout(2000);
+                    await page.waitForTimeout(1500);
 
-                    // Get page HTML
-                    const html = await page.content();
-                    request.userData.html = html;
+                    // Get page HTML and store in closure variable
+                    extractedHtml = await page.content();
+                    log.debug(`Playwright extracted ${extractedHtml?.length || 0} chars of HTML`);
+                },
+
+                failedRequestHandler({ request, error }) {
+                    log.debug(`Playwright failed for ${request.url}: ${error.message}`);
                 },
             });
 
-            const result = { html: null };
-
             try {
-                await playwrightCrawler.run([{
-                    url,
-                    userData: { label: 'PLAYWRIGHT' },
-                }]);
-
-                // Get the result from the last request
-                const requestQueue = await playwrightCrawler.requestQueue;
-                if (requestQueue) {
-                    const { items } = await requestQueue.getHandledRequests();
-                    if (items.length > 0) {
-                        result.html = items[0].userData?.html;
-                    }
-                }
+                await playwrightCrawler.run([{ url }]);
             } catch (e) {
-                log.warning(`Playwright crawl failed: ${e.message}`);
+                log.warning(`Playwright crawl error: ${e.message}`);
             }
 
-            return result.html;
+            return extractedHtml;
         }
 
         // ==================== MAIN SCRAPING LOGIC ====================

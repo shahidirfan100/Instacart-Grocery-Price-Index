@@ -15,6 +15,6 @@
     "title": "Instacart Grocery Price Index",
     "description": "Scrape and index grocery prices from Instacart for price comparison and market analysis",
     "author": "Shahid Irfan",
-    "generatedBy": "anthropic-sonnet-4"
+    "generatedBy": "gpt-5"
   }
 }
