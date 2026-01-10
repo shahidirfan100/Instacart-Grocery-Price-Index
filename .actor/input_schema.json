@@ -49,20 +49,6 @@
       "default": 20,
       "editor": "number"
     },
-    "extractDetails": {
-      "title": "📄 Fetch Detail Pages",
-      "type": "boolean",
-      "description": "Fetch individual product pages to get price, brand, original_price, unit_price, and retailer info. WARNING: Slow and may timeout - disable for faster scraping.",
-      "editor": "checkbox",
-      "default": false
-    },
-    "includeNutrition": {
-      "title": "Include Nutrition Information",
-      "type": "boolean",
-      "description": "Extract nutrition facts and dietary information when available.",
-      "editor": "checkbox",
-      "default": true
-    },
     "storeId": {
       "title": "Store ID",
       "type": "string",
