@@ -105,13 +105,22 @@ async function main() {
                     return null;
                 }
 
-                // Decode HTML entities
+                // Step 1: Decode URL encoding first (handles %7B, %22, etc.)
+                if (rawData.includes('%7B') || rawData.includes('%22')) {
+                    try {
+                        rawData = decodeURIComponent(rawData);
+                        log.debug('URL decoding applied to Apollo state');
+                    } catch (e) {
+                        log.debug('URL decoding not needed or failed, continuing...');
+                    }
+                }
+
+                // Step 2: Decode HTML entities
                 const decodedData = decodeHtmlEntities(rawData);
 
                 // Try to find JSON object boundaries
                 let jsonString = decodedData.trim();
                 if (!jsonString.startsWith('{')) {
-                    // Try to extract JSON from potential wrapper
                     const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
                     if (jsonMatch) {
                         jsonString = jsonMatch[0];
@@ -123,7 +132,7 @@ async function main() {
                     const keyCount = Object.keys(parsed).length;
                     log.info(`✅ Apollo state parsed: ${keyCount} top-level keys`);
 
-                    // Log some key names for debugging
+                    // Log sample keys for debugging
                     const sampleKeys = Object.keys(parsed).slice(0, 5);
                     log.debug(`Sample Apollo keys: ${sampleKeys.join(', ')}`);
 
@@ -140,24 +149,46 @@ async function main() {
 
         /**
          * Extract products dynamically from Apollo cache
-         * Searches for product-like objects regardless of query key names
+         * Handles Instacart's nested LandingTaxonomyProducts structure
          */
         function extractProductsFromApollo(apolloData, baseUrl) {
             const products = [];
             if (!apolloData || typeof apolloData !== 'object') return products;
 
             try {
-                // Strategy 1: Look for keys starting with "Product:" (Apollo cache refs)
+                // Strategy 1: Look for LandingTaxonomyProducts keys (Instacart's structure)
                 for (const [key, value] of Object.entries(apolloData)) {
                     if (!value || typeof value !== 'object') continue;
 
-                    // Check if this is a product entry
-                    if (key.startsWith('Product:') ||
-                        key.startsWith('Item:') ||
-                        value.__typename === 'Product' ||
-                        value.__typename === 'Item' ||
-                        value.__typename === 'LegacyProduct') {
+                    // Handle LandingTaxonomyProducts structure
+                    if (key.startsWith('LandingTaxonomyProducts:') || key.includes('TaxonomyProducts')) {
+                        log.debug(`Found taxonomy products key: ${key}`);
 
+                        // Value is an object with query parameters as keys
+                        for (const [queryKey, queryData] of Object.entries(value)) {
+                            if (!queryData || typeof queryData !== 'object') continue;
+
+                            // Look for landingTaxonomyProducts.products
+                            const productsArray = queryData?.landingTaxonomyProducts?.products ||
+                                queryData?.products ||
+                                [];
+
+                            if (Array.isArray(productsArray)) {
+                                log.info(`Found ${productsArray.length} products in ${key}`);
+
+                                for (const item of productsArray) {
+                                    const product = extractLandingProduct(item, baseUrl);
+                                    if (product.name || product.product_id) {
+                                        products.push(product);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Also check for direct Product: keys (fallback for other Apollo structures)
+                    if (key.startsWith('Product:') || key.startsWith('Item:') ||
+                        value.__typename === 'Product' || value.__typename === 'Item') {
                         const product = extractProductFields(value, baseUrl);
                         if (product.name || product.product_id) {
                             products.push(product);
@@ -165,12 +196,10 @@ async function main() {
                     }
                 }
 
-                // Strategy 2: Check ROOT_QUERY for product arrays
+                // Strategy 2: Check ROOT_QUERY for product arrays (fallback)
                 const rootQuery = apolloData.ROOT_QUERY || apolloData.root_query || {};
                 for (const [queryKey, queryValue] of Object.entries(rootQuery)) {
                     if (!queryValue) continue;
-
-                    // Look for product arrays in query results
                     const productArrays = findProductArrays(queryValue, apolloData);
                     for (const arr of productArrays) {
                         for (const item of arr) {
@@ -188,6 +217,52 @@ async function main() {
             }
 
             return products;
+        }
+
+        /**
+         * Extract product from Instacart's LandingLandingProduct structure
+         */
+        function extractLandingProduct(item, baseUrl) {
+            if (!item || typeof item !== 'object') return {};
+
+            const id = item.id || item.productId || null;
+            const name = item.name || item.title || null;
+            const size = item.size || null;
+            const landingParam = item.landingParam || null;
+
+            // Extract image URL from nested structure
+            let imageUrl = null;
+            const templateUrl = item.image?.viewSection?.productImage?.templateUrl ||
+                item.image?.url ||
+                item.imageUrl ||
+                null;
+
+            if (templateUrl) {
+                // Replace {width=}x{height=} placeholders with actual dimensions
+                imageUrl = templateUrl
+                    .replace('{width=}', '400')
+                    .replace('{height=}', '400')
+                    .replace('{width}', '400')
+                    .replace('{height}', '400');
+            }
+
+            // Build product URL from landingParam
+            const productUrl = landingParam
+                ? `https://www.instacart.com/products/${landingParam}`
+                : (id ? `https://www.instacart.com/products/${id}` : null);
+
+            return {
+                product_id: id,
+                name: name,
+                size: size,
+                image_url: imageUrl ? cleanImageUrl(imageUrl) : null,
+                product_url: productUrl,
+                in_stock: true,
+                store: 'Instacart',
+                category: 'Fresh Produce',
+                timestamp: new Date().toISOString(),
+                extraction_method: 'apollo_graphql'
+            };
         }
 
         /**
