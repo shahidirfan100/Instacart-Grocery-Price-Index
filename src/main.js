@@ -709,7 +709,7 @@ async function main() {
         log.info('📈 Stats saved to key-value store');
 
     } catch (error) {
-        log.error('Actor failed:', error);
+        log.exception(error);
         throw error;
     } finally {
         await Actor.exit();
@@ -717,6 +717,6 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error('Fatal error:', err);
+    log.exception(err);
     process.exit(1);
 });
