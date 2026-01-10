@@ -646,6 +646,41 @@ async function main() {
             return htmlResult;
         }
 
+        async function scrapeUrl(url, pageNo = 1) {
+            const products = [];
+
+            // Add stealth delay
+            if (pageNo > 1) {
+                await sleep(DELAY_MS_VALUE);
+            }
+
+            log.info(`?? Processing page ${pageNo}: ${url}`);
+
+            const html = await fetchWithPlaywright(url);
+            if (!html) {
+                log.error(`? Failed to fetch: ${url}`);
+                return products;
+            }
+
+            // Parse HTML with Cheerio
+            const $ = cheerioLoad(html);
+
+            // Try Apollo extraction first (Priority 1)
+            const apolloData = extractApolloState($);
+            if (apolloData) {
+                const apolloProducts = extractProductsFromApollo(apolloData, url);
+                products.push(...apolloProducts);
+            }
+
+            // Fallback to HTML parsing if Apollo didn't yield results
+            if (products.length === 0) {
+                const htmlProducts = extractFromHTML($, url);
+                products.push(...htmlProducts);
+            }
+
+            return products;
+        }
+
         // ==================== RUN SCRAPER ====================
 
         const allProducts = [];
