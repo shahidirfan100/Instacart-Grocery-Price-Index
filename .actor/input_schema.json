@@ -5,13 +5,13 @@
   "schemaVersion": 1,
   "properties": {
     "startUrls": {
-      "title": "Start URLs List",
+      "title": "🛒 Start URLs List",
       "type": "array",
-      "description": "Multiple Instacart URLs to scrape (category pages, search results, or product pages).",
+      "description": "Instacart URLs to scrape. Use store-specific URLs (e.g., /store/safeway/...) to get price data. Generic category URLs don't include prices.",
       "editor": "requestListSources",
       "prefill": [
         {
-          "url": "https://www.instacart.com/categories/316-food/317-fresh-produce"
+          "url": "https://www.instacart.com/store/safeway/categories/316-food/317-fresh-produce"
         }
       ]
     },

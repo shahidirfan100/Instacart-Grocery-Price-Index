@@ -11,7 +11,7 @@ async function main() {
     try {
         const input = (await Actor.getInput()) || {};
         const {
-            startUrl = 'https://www.instacart.com/categories/316-food/317-fresh-produce',
+            startUrl = 'https://www.instacart.com/store/safeway/categories/316-food/317-fresh-produce',
             startUrls = [],
             results_wanted: RESULTS_WANTED_RAW = 100,
             max_pages: MAX_PAGES_RAW = 10,
@@ -41,13 +41,21 @@ async function main() {
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms + Math.random() * 500));
         const toAbs = (href, base) => { try { return new URL(href, base).href; } catch { return null; } };
 
-        // Build initial URLs
+        // Build initial URLs and warn about generic category URLs
         const initial = [];
         if (Array.isArray(startUrls) && startUrls.length) {
             initial.push(...startUrls.map(u => typeof u === 'string' ? { url: u } : u));
         }
         if (startUrl && !initial.some(u => u.url === startUrl)) initial.push({ url: startUrl });
-        if (!initial.length) initial.push({ url: 'https://www.instacart.com/categories/316-food/317-fresh-produce' });
+        if (!initial.length) initial.push({ url: 'https://www.instacart.com/store/safeway/categories/316-food/317-fresh-produce' });
+
+        // Warn if using generic category URLs (no store = no price data)
+        for (const req of initial) {
+            const url = req.url || '';
+            if (url.includes('/categories/') && !url.includes('/store/')) {
+                log.warning(`⚠️ URL "${url}" is a generic category URL without a store - prices will NOT be available. Use store-specific URLs like: /store/safeway/categories/...`);
+            }
+        }
 
         const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
         let saved = 0;
@@ -258,47 +266,53 @@ async function main() {
             const landingParam = item.landingParam || null;
 
             // ========== PRICE EXTRACTION ==========
-            // Try multiple paths for price in Apollo's nested structure
+            // CORRECT Apollo paths for store-specific pages:
+            // - price.viewSection.itemCard.priceString (e.g., "$5.99")
+            // - price.viewSection.itemCard.plainFullPriceString for original price (e.g., "$7.99")
+            // - price.viewSection.itemDetails.pricePerUnitString for unit price (e.g., "$0.50/ct")
             let price = null;
             let originalPrice = null;
             let unitPrice = null;
 
-            // Path 1: viewSection.priceInfo (common Instacart structure)
+            // Primary path: item.price.viewSection.itemCard (store-specific pages)
+            const priceSection = item.price?.viewSection || {};
+            const itemCard = priceSection.itemCard || {};
+            const itemDetails = priceSection.itemDetails || {};
+
+            // Current price from itemCard
+            price = itemCard.priceString || itemCard.price ||
+                priceSection.priceString || priceSection.price ||
+                item.priceString || item.price ||
+                null;
+
+            // Original/Was Price from itemCard (plainFullPriceString or fullPriceString)
+            originalPrice = itemCard.plainFullPriceString || itemCard.fullPriceString ||
+                itemCard.originalPrice || itemCard.wasPrice ||
+                priceSection.plainFullPriceString || priceSection.originalPrice ||
+                item.originalPrice || item.wasPrice ||
+                null;
+
+            // Unit Price from itemDetails
+            unitPrice = itemDetails.pricePerUnitString || itemDetails.unitPrice ||
+                priceSection.pricePerUnitString || priceSection.unitPrice ||
+                item.unitPrice || item.pricePerUnit ||
+                null;
+
+            // Fallback: check legacy viewSection.priceInfo structure
             const viewSection = item.viewSection || item.image?.viewSection || {};
-            const priceInfo = viewSection.priceInfo || viewSection.pricing || item.priceInfo || item.pricing || {};
+            const priceInfo = viewSection.priceInfo || viewSection.pricing || item.priceInfo || {};
 
-            // Current/Sale Price - check multiple possible field names
-            price = priceInfo.price || priceInfo.currentPrice || priceInfo.salePrice ||
-                priceInfo.priceString || priceInfo.displayPrice ||
-                item.price || item.currentPrice || item.salePrice ||
-                viewSection.price || viewSection.currentPrice ||
-                null;
-
-            // Original/Was Price (before discount)
-            originalPrice = priceInfo.originalPrice || priceInfo.wasPrice || priceInfo.regularPrice ||
-                priceInfo.basePrice || priceInfo.listPrice ||
-                item.originalPrice || item.wasPrice || item.regularPrice ||
-                viewSection.originalPrice || viewSection.wasPrice ||
-                null;
-
-            // Unit Price (e.g., "$1.50/lb", "$0.10/oz")
-            unitPrice = priceInfo.unitPrice || priceInfo.pricePerUnit || priceInfo.unitPricing ||
-                priceInfo.perUnitString || priceInfo.secondaryPrice ||
-                item.unitPrice || item.pricePerUnit || item.unitPricing ||
-                viewSection.unitPrice || viewSection.pricePerUnit ||
-                null;
-
-            // Path 2: Check for nested price object with amount/currency
-            if (!price && priceInfo.amount) {
-                price = priceInfo.amount;
+            if (!price) {
+                price = priceInfo.price || priceInfo.currentPrice || priceInfo.priceString ||
+                    viewSection.price || viewSection.currentPrice || null;
             }
-            if (!price && item.displayPrice?.amount) {
-                price = item.displayPrice.amount;
+            if (!originalPrice) {
+                originalPrice = priceInfo.originalPrice || priceInfo.wasPrice ||
+                    viewSection.originalPrice || null;
             }
-
-            // Path 3: Check for priceText or formatted strings
-            if (!price && (priceInfo.priceText || item.priceText)) {
-                price = priceInfo.priceText || item.priceText;
+            if (!unitPrice) {
+                unitPrice = priceInfo.unitPrice || priceInfo.pricePerUnit ||
+                    viewSection.unitPrice || null;
             }
 
             // ========== BRAND EXTRACTION ==========
@@ -353,7 +367,7 @@ async function main() {
                 product_url: productUrl,
                 in_stock: inStock,
                 store: retailer,
-                category: 'Fresh Produce',
+                category: null, // Will be set from URL path
                 timestamp: new Date().toISOString(),
                 extraction_method: 'apollo_graphql'
             };
