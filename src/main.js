@@ -220,7 +220,32 @@ async function main() {
         }
 
         /**
+         * Extract retailer/store name from URL path
+         */
+        function extractRetailerFromUrl(url) {
+            if (!url) return 'Instacart';
+            try {
+                const urlObj = new URL(url);
+                // Pattern: /store/{retailerSlug}/... or ?retailerSlug={retailer}
+                const storeMatch = urlObj.pathname.match(/\/store\/([^\/]+)/);
+                if (storeMatch && storeMatch[1]) {
+                    // Capitalize retailer name (e.g., "safeway" -> "Safeway")
+                    return storeMatch[1].charAt(0).toUpperCase() + storeMatch[1].slice(1).toLowerCase();
+                }
+                // Check URL params
+                const retailerParam = urlObj.searchParams.get('retailerSlug') || urlObj.searchParams.get('retailer');
+                if (retailerParam) {
+                    return retailerParam.charAt(0).toUpperCase() + retailerParam.slice(1).toLowerCase();
+                }
+            } catch (e) {
+                log.debug(`Failed to extract retailer from URL: ${e.message}`);
+            }
+            return 'Instacart';
+        }
+
+        /**
          * Extract product from Instacart's LandingLandingProduct structure
+         * Now extracts: price, original_price, brand, unit_price, and dynamic retailer/store
          */
         function extractLandingProduct(item, baseUrl) {
             if (!item || typeof item !== 'object') return {};
@@ -230,11 +255,61 @@ async function main() {
             const size = item.size || null;
             const landingParam = item.landingParam || null;
 
-            // Extract image URL from nested structure
+            // ========== PRICE EXTRACTION ==========
+            // Try multiple paths for price in Apollo's nested structure
+            let price = null;
+            let originalPrice = null;
+            let unitPrice = null;
+
+            // Path 1: viewSection.priceInfo (common Instacart structure)
+            const viewSection = item.viewSection || item.image?.viewSection || {};
+            const priceInfo = viewSection.priceInfo || viewSection.pricing || item.priceInfo || item.pricing || {};
+
+            // Current/Sale Price - check multiple possible field names
+            price = priceInfo.price || priceInfo.currentPrice || priceInfo.salePrice ||
+                priceInfo.priceString || priceInfo.displayPrice ||
+                item.price || item.currentPrice || item.salePrice ||
+                viewSection.price || viewSection.currentPrice ||
+                null;
+
+            // Original/Was Price (before discount)
+            originalPrice = priceInfo.originalPrice || priceInfo.wasPrice || priceInfo.regularPrice ||
+                priceInfo.basePrice || priceInfo.listPrice ||
+                item.originalPrice || item.wasPrice || item.regularPrice ||
+                viewSection.originalPrice || viewSection.wasPrice ||
+                null;
+
+            // Unit Price (e.g., "$1.50/lb", "$0.10/oz")
+            unitPrice = priceInfo.unitPrice || priceInfo.pricePerUnit || priceInfo.unitPricing ||
+                priceInfo.perUnitString || priceInfo.secondaryPrice ||
+                item.unitPrice || item.pricePerUnit || item.unitPricing ||
+                viewSection.unitPrice || viewSection.pricePerUnit ||
+                null;
+
+            // Path 2: Check for nested price object with amount/currency
+            if (!price && priceInfo.amount) {
+                price = priceInfo.amount;
+            }
+            if (!price && item.displayPrice?.amount) {
+                price = item.displayPrice.amount;
+            }
+
+            // Path 3: Check for priceText or formatted strings
+            if (!price && (priceInfo.priceText || item.priceText)) {
+                price = priceInfo.priceText || item.priceText;
+            }
+
+            // ========== BRAND EXTRACTION ==========
+            const brand = item.brand || item.brandName || item.brandInfo?.name ||
+                viewSection.brand || viewSection.brandName ||
+                item.manufacturer || null;
+
+            // ========== IMAGE EXTRACTION ==========
             let imageUrl = null;
             const templateUrl = item.image?.viewSection?.productImage?.templateUrl ||
-                item.image?.url ||
-                item.imageUrl ||
+                item.image?.url || item.image?.templateUrl ||
+                item.imageUrl || item.primaryImageUrl ||
+                viewSection.productImage?.templateUrl ||
                 null;
 
             if (templateUrl) {
@@ -251,14 +326,31 @@ async function main() {
                 ? `https://www.instacart.com/products/${landingParam}`
                 : (id ? `https://www.instacart.com/products/${id}` : null);
 
+            // ========== RETAILER/STORE EXTRACTION ==========
+            // Try to get from item first, then fall back to URL parsing
+            const retailer = item.retailerName || item.retailer || item.storeName || item.store ||
+                viewSection.retailerName || viewSection.storeName ||
+                extractRetailerFromUrl(baseUrl);
+
+            // ========== AVAILABILITY/STOCK STATUS ==========
+            const inStock = item.inStock !== false &&
+                item.available !== false &&
+                item.isAvailable !== false &&
+                item.availability?.status !== 'out_of_stock' &&
+                viewSection.available !== false;
+
             return {
                 product_id: id,
                 name: name,
+                brand: brand,
+                price: typeof price === 'number' ? price : parsePrice(price),
+                original_price: typeof originalPrice === 'number' ? originalPrice : parsePrice(originalPrice),
+                unit_price: unitPrice,
                 size: size,
                 image_url: imageUrl ? cleanImageUrl(imageUrl) : null,
                 product_url: productUrl,
-                in_stock: true,
-                store: 'Instacart',
+                in_stock: inStock,
+                store: retailer,
                 category: 'Fresh Produce',
                 timestamp: new Date().toISOString(),
                 extraction_method: 'apollo_graphql'
