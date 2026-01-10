@@ -719,19 +719,30 @@ async function main() {
 
         /**
          * Fetch multiple product detail pages in parallel using Playwright
-         * HTTP is blocked on detail pages - must use browser rendering
+         * Uses shared Map to store extracted data for reliable data passing
          */
         async function fetchProductDetailsBatch(products) {
             if (!products.length) return products;
 
             log.info(`🎭 Using Playwright to fetch ${products.length} detail pages...`);
 
+            // Shared data store - Map keyed by URL
+            const extractedDataMap = new Map();
+
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
                 maxRequestRetries: 1,
-                requestHandlerTimeoutSecs: 30,
-                maxConcurrency: 3, // Parallel fetching - 3 at a time
+                requestHandlerTimeoutSecs: 20,
+                navigationTimeoutSecs: 15,
+                maxConcurrency: 5, // Faster - 5 parallel
                 headless: true,
+                useSessionPool: true,
+                persistCookiesPerSession: true,
+
+                browserPoolOptions: {
+                    maxOpenPagesPerBrowser: 3,
+                    retireBrowserAfterPageCount: 10,
+                },
 
                 launchContext: {
                     launchOptions: {
@@ -739,39 +750,62 @@ async function main() {
                             '--disable-blink-features=AutomationControlled',
                             '--disable-dev-shm-usage',
                             '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-infobars',
+                            '--disable-background-networking',
+                            '--disable-default-apps',
+                            '--disable-extensions',
+                            '--disable-sync',
+                            '--disable-translate',
+                            '--metrics-recording-only',
+                            '--mute-audio',
+                            '--no-first-run',
+                            '--ignore-certificate-errors',
                         ],
                     },
                 },
 
                 preNavigationHooks: [
-                    async ({ page }) => {
+                    async ({ page, request }) => {
+                        // Block heavy resources for speed
+                        await page.route('**/*', (route) => {
+                            const resourceType = route.request().resourceType();
+                            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                                return route.abort();
+                            }
+                            return route.continue();
+                        });
+
                         // Stealth: Override navigator properties
                         await page.addInitScript(() => {
                             Object.defineProperty(navigator, 'webdriver', { get: () => false });
                             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                             window.chrome = { runtime: {} };
+                            delete navigator.__proto__.webdriver;
                         });
 
                         await page.setExtraHTTPHeaders({
                             'Accept-Language': 'en-US,en;q=0.9',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                         });
                     },
                 ],
 
                 async requestHandler({ page, request }) {
+                    const productUrl = request.url;
                     const productIndex = request.userData.productIndex;
 
                     try {
-                        // Wait for page content
+                        // Wait for DOM only (faster)
                         await page.waitForLoadState('domcontentloaded');
-                        await page.waitForTimeout(1500);
+                        await page.waitForTimeout(800);
 
                         // Extract data using JavaScript in browser context
                         const extractedData = await page.evaluate(() => {
                             const result = { price: null, brand: null, unitPrice: null, store: null };
 
-                            // Try JSON-LD first
+                            // Try JSON-LD first (fastest)
                             const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
                             for (const script of ldScripts) {
                                 try {
@@ -785,9 +819,9 @@ async function main() {
                                 } catch (e) { }
                             }
 
-                            // Try Apollo state (rendered in browser)
+                            // Try Apollo state
                             const apolloEl = document.getElementById('node-apollo-state');
-                            if (apolloEl && (!result.price || !result.brand)) {
+                            if (apolloEl) {
                                 try {
                                     const apolloData = JSON.parse(decodeURIComponent(apolloEl.textContent));
                                     for (const [key, value] of Object.entries(apolloData)) {
@@ -835,43 +869,46 @@ async function main() {
                             return result;
                         });
 
-                        // Store extracted data in request
-                        request.userData.extractedData = extractedData;
-                        log.debug(`✅ Extracted from detail page: price=${extractedData.price}, brand=${extractedData.brand}`);
+                        // Store in shared Map
+                        extractedDataMap.set(productUrl, { index: productIndex, data: extractedData });
+
+                        if (extractedData.price) {
+                            log.info(`✅ [${productIndex + 1}] Price: $${extractedData.price} | Brand: ${extractedData.brand || 'N/A'}`);
+                        }
 
                     } catch (e) {
-                        log.debug(`Detail page extraction failed: ${e.message}`);
-                        request.userData.extractedData = null;
+                        log.debug(`Detail extraction failed for index ${productIndex}: ${e.message}`);
                     }
+                },
+
+                failedRequestHandler({ request, error }) {
+                    log.debug(`Failed to fetch: ${request.url} - ${error.message}`);
                 },
             });
 
             // Build requests for all products
             const requests = products.map((product, index) => ({
                 url: product.product_url,
-                userData: { productIndex: index, productName: product.name },
+                userData: { productIndex: index },
+                uniqueKey: product.product_url,
             })).filter(r => r.url);
 
             try {
                 await playwrightCrawler.run(requests);
 
-                // Merge extracted data back into products
-                const requestQueue = await playwrightCrawler.requestQueue;
-                if (requestQueue) {
-                    const { items } = await requestQueue.getHandledRequests();
-                    for (const request of items) {
-                        const index = request.userData.productIndex;
-                        const extracted = request.userData.extractedData;
-                        if (extracted && products[index]) {
-                            if (extracted.price) products[index].price = extracted.price;
-                            if (extracted.brand) products[index].brand = extracted.brand;
-                            if (extracted.unitPrice) products[index].unit_price = extracted.unitPrice;
-                            if (extracted.store) products[index].store = extracted.store;
-                        }
+                // Merge extracted data back into products from shared Map
+                for (const [url, { index, data }] of extractedDataMap) {
+                    if (products[index]) {
+                        if (data.price) products[index].price = data.price;
+                        if (data.brand) products[index].brand = data.brand;
+                        if (data.unitPrice) products[index].unit_price = data.unitPrice;
+                        if (data.store) products[index].store = data.store;
                     }
                 }
+
+                log.info(`📊 Extracted data from ${extractedDataMap.size}/${products.length} detail pages`);
             } catch (e) {
-                log.warning(`Batch detail fetching failed: ${e.message}`);
+                log.warning(`Batch detail fetching error: ${e.message}`);
             }
 
             return products;
@@ -894,7 +931,8 @@ async function main() {
                     break;
                 }
 
-                // Deduplicate and save
+                // Process and push products immediately
+                const productsToSave = [];
                 for (const product of products) {
                     if (saved >= RESULTS_WANTED) break;
 
@@ -902,21 +940,29 @@ async function main() {
                     if (dedupe && productKey && seenProductIds.has(productKey)) continue;
                     if (productKey) seenProductIds.add(productKey);
 
-                    // Add zipcode
+                    // Add zipcode and store from URL if missing
                     product.zipcode = zipcode;
+                    if (!product.store || product.store === 'Instacart') {
+                        product.store = extractRetailerFromUrl(product.product_url || url);
+                    }
 
+                    productsToSave.push(product);
                     allProducts.push(product);
                     saved++;
                 }
 
-                log.info(`📊 Progress: ${saved}/${RESULTS_WANTED} products saved`);
+                // Push listing data IMMEDIATELY as received
+                if (productsToSave.length > 0) {
+                    await Dataset.pushData(productsToSave);
+                    log.info(`� Saved ${productsToSave.length} products | Total: ${saved}/${RESULTS_WANTED}`);
+                }
 
                 if (saved >= RESULTS_WANTED) break;
                 currentPage++;
             }
         }
 
-        // ==================== ENRICH PRODUCTS WITH DETAIL PAGE DATA ====================
+        // ==================== OPTIONAL: ENRICH WITH DETAIL PAGES ====================
         if (extractDetails) {
             // Filter products that need detail fetching
             const productsNeedingDetails = allProducts.filter(p => !p.price || !p.brand);
@@ -928,21 +974,22 @@ async function main() {
                 await fetchProductDetailsBatch(productsNeedingDetails);
 
                 // Count enriched products
-                const enrichedCount = productsNeedingDetails.filter(p => p.price || p.brand).length;
-                log.info(`✅ Enriched ${enrichedCount}/${productsNeedingDetails.length} products with detail page data`);
+                const enrichedProducts = productsNeedingDetails.filter(p => p.price || p.brand);
+
+                if (enrichedProducts.length > 0) {
+                    // Push enriched products as updates (these will be additional records)
+                    await Dataset.pushData(enrichedProducts.map(p => ({
+                        ...p,
+                        _enriched: true,
+                        enriched_at: new Date().toISOString(),
+                    })));
+                    log.info(`✅ Enriched and saved ${enrichedProducts.length} products with detail page data`);
+                }
             } else {
-                log.info(`✅ All products already have price/brand data, skipping detail fetching`);
+                log.info(`✅ All products already have price/brand data`);
             }
         } else {
             log.info(`⏩ Skipping detail page fetching (extractDetails is disabled)`);
-        }
-
-        // Push all data in batches
-        const BATCH_SIZE = 20;
-        for (let i = 0; i < allProducts.length; i += BATCH_SIZE) {
-            const batch = allProducts.slice(i, i + BATCH_SIZE);
-            await Dataset.pushData(batch);
-            log.info(`💾 Pushed batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(allProducts.length / BATCH_SIZE)}`);
         }
 
         // Summary
