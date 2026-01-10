@@ -482,11 +482,16 @@ async function main() {
         async function fetchWithPlaywright(url) {
             log.info(`🎭 Using Playwright stealth mode for: ${url}`);
 
+            // Use closure variable to capture HTML from request handler
+            let extractedHtml = null;
+
             const playwrightCrawler = new PlaywrightCrawler({
                 proxyConfiguration: proxyConf,
                 maxRequestRetries: 2,
                 requestHandlerTimeoutSecs: 60,
+                navigationTimeoutSecs: 30,
                 headless: true,
+                maxConcurrency: 1,
 
                 launchContext: {
                     launchOptions: {
@@ -494,12 +499,22 @@ async function main() {
                             '--disable-blink-features=AutomationControlled',
                             '--disable-dev-shm-usage',
                             '--no-sandbox',
+                            '--disable-setuid-sandbox',
                         ],
                     },
                 },
 
                 preNavigationHooks: [
                     async ({ page }) => {
+                        // Block heavy resources for speed
+                        await page.route('**/*', (route) => {
+                            const resourceType = route.request().resourceType();
+                            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                                return route.abort();
+                            }
+                            return route.continue();
+                        });
+
                         // Stealth: Override navigator properties
                         await page.addInitScript(() => {
                             Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -514,38 +529,28 @@ async function main() {
                     },
                 ],
 
-                async requestHandler({ page, request }) {
+                async requestHandler({ page }) {
                     // Wait for content to load
                     await page.waitForLoadState('domcontentloaded');
-                    await page.waitForTimeout(2000);
+                    await page.waitForTimeout(1500);
 
-                    // Get page HTML
-                    const html = await page.content();
-                    request.userData.html = html;
+                    // Get page HTML and store in closure variable
+                    extractedHtml = await page.content();
+                    log.debug(`Playwright extracted ${extractedHtml?.length || 0} chars of HTML`);
+                },
+
+                failedRequestHandler({ request, error }) {
+                    log.debug(`Playwright failed for ${request.url}: ${error.message}`);
                 },
             });
 
-            const result = { html: null };
-
             try {
-                await playwrightCrawler.run([{
-                    url,
-                    userData: { label: 'PLAYWRIGHT' },
-                }]);
-
-                // Get the result from the last request
-                const requestQueue = await playwrightCrawler.requestQueue;
-                if (requestQueue) {
-                    const { items } = await requestQueue.getHandledRequests();
-                    if (items.length > 0) {
-                        result.html = items[0].userData?.html;
-                    }
-                }
+                await playwrightCrawler.run([{ url }]);
             } catch (e) {
-                log.warning(`Playwright crawl failed: ${e.message}`);
+                log.warning(`Playwright crawl error: ${e.message}`);
             }
 
-            return result.html;
+            return extractedHtml;
         }
 
         // ==================== MAIN SCRAPING LOGIC ====================
