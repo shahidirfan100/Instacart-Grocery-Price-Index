@@ -1,7 +1,7 @@
 // Instacart Grocery Price Index - Production-ready Apify Actor
 // Hybrid approach: HTTP + Apollo GraphQL (Priority 1) → Playwright stealth fallback (Priority 2)
 import { Actor, log } from 'apify';
-import { CheerioCrawler, PlaywrightCrawler, Dataset } from 'crawlee';
+import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { gotScraping } from 'got-scraping';
 
@@ -583,6 +583,20 @@ async function main() {
             }
         }
 
+        function normalizeHtmlBody(body) {
+            if (body === null || body === undefined) return null;
+            if (Buffer.isBuffer(body)) return body.toString('utf-8');
+            if (typeof body === 'string') return body;
+            if (typeof body === 'object') {
+                try {
+                    return JSON.stringify(body);
+                } catch {
+                    return null;
+                }
+            }
+            return String(body);
+        }
+
         /**
          * Extract Next.js data object from HTML
          */
@@ -987,21 +1001,24 @@ async function main() {
                     headers: buildHeaders(options),
                     timeout: { request: 30000 },
                     retry: { limit: 0 },
+                    throwHttpErrors: false,
+                    responseType: 'text',
                     proxyUrl: proxyConf ? await proxyConf.newUrl() : undefined,
                 });
 
                 updateCookiesFromResponse(response);
+                const bodyText = normalizeHtmlBody(response.body);
 
                 if (response.statusCode === 200) {
-                    return response.body;
+                    return bodyText;
                 }
 
                 // Handle 202 (Accepted/Processing) - common for Instacart async pages
                 if (response.statusCode === 202) {
                     // Check if 202 response still contains useful Apollo data
-                    if (response.body && response.body.includes('node-apollo-state')) {
+                    if (bodyText && bodyText.includes('node-apollo-state')) {
                         log.debug(`202 response contains Apollo data, using it`);
-                        return response.body;
+                        return bodyText;
                     }
 
                     // Retry with exponential backoff
@@ -1013,7 +1030,7 @@ async function main() {
                     }
 
                     log.debug(`202 after ${MAX_RETRIES} retries, returning response body anyway`);
-                    return response.body; // Return anyway, might have partial data
+                    return bodyText; // Return anyway, might have partial data
                 }
 
                 if ([429, 403, 503].includes(response.statusCode) && retryCount < MAX_RETRIES) {
@@ -1048,13 +1065,16 @@ async function main() {
                     headers: buildHeaders(requestOptions),
                     timeout: { request: 30000 },
                     retry: { limit: 0 },
+                    throwHttpErrors: false,
+                    responseType: 'text',
                     proxyUrl: proxyConf ? await proxyConf.newUrl() : undefined,
                 });
 
                 updateCookiesFromResponse(response);
 
-                if (response.statusCode === 200 && response.body) {
-                    const parsed = safeJsonParse(response.body);
+                const bodyText = normalizeHtmlBody(response.body);
+                if (response.statusCode === 200 && bodyText) {
+                    const parsed = safeJsonParse(bodyText);
                     if (parsed) return parsed;
                 }
 
@@ -1153,61 +1173,66 @@ async function main() {
 
         async function scrapeUrl(url, pageNo = 1) {
             const products = [];
+            try {
+                // Add stealth delay
+                if (pageNo > 1) {
+                    await sleep(DELAY_MS_VALUE);
+                }
 
-            // Add stealth delay
-            if (pageNo > 1) {
-                await sleep(DELAY_MS_VALUE);
-            }
+                log.info(`?? Processing page ${pageNo}: ${url}`);
 
-            log.info(`📥 Processing page ${pageNo}: ${url}`);
+                // Try HTTP first (Priority 1)
+                let html = await fetchWithHTTP(url);
 
-            // Try HTTP first (Priority 1)
-            let html = await fetchWithHTTP(url);
+                // If HTTP fails, use Playwright (Priority 2)
+                if (!html && !usePlaywright) {
+                    log.info('?? HTTP failed, switching to Playwright mode');
+                    usePlaywright = true;
+                }
 
-            // If HTTP fails, use Playwright (Priority 2)
-            if (!html && !usePlaywright) {
-                log.info('⚠️ HTTP failed, switching to Playwright mode');
-                usePlaywright = true;
-            }
+                if (!html && usePlaywright) {
+                    html = await fetchWithPlaywright(url);
+                }
 
-            if (!html && usePlaywright) {
-                html = await fetchWithPlaywright(url);
-            }
+                if (!html) {
+                    log.error(`? Failed to fetch: ${url}`);
+                    return products;
+                }
 
-            if (!html) {
-                log.error(`❌ Failed to fetch: ${url}`);
+                // Parse HTML with Cheerio
+                const $ = cheerioLoad(html);
+
+                const nextData = extractNextData($);
+                if (nextData?.buildId) {
+                    if (!nextBuildId || nextBuildId !== nextData.buildId) {
+                        nextBuildId = nextData.buildId;
+                        log.debug(`Captured Next.js buildId: ${nextBuildId}`);
+                    }
+                }
+
+                // Try Apollo extraction first (Priority 1)
+                const apolloData = extractApolloState($);
+                if (apolloData) {
+                    const apolloProducts = extractProductsFromApollo(apolloData, url);
+                    products.push(...apolloProducts);
+                }
+
+                // Fallback to HTML parsing if Apollo didn't yield results
+                if (products.length === 0) {
+                    const htmlProducts = extractFromHTML($, url);
+                    products.push(...htmlProducts);
+                }
+
+                for (const product of products) {
+                    if (!product.source_url) product.source_url = url;
+                    if (!product.store_slug) {
+                        product.store_slug = extractRetailerSlugFromUrl(product.product_url || url);
+                    }
+                }
+            } catch (e) {
+                log.warning(`Scrape failed for ${url}: ${e.message}`);
+                log.debug(`Scrape error stack: ${e.stack?.slice(0, 500)}`);
                 return products;
-            }
-
-            // Parse HTML with Cheerio
-            const $ = cheerioLoad(html);
-
-            const nextData = extractNextData($);
-            if (nextData?.buildId) {
-                if (!nextBuildId || nextBuildId !== nextData.buildId) {
-                    nextBuildId = nextData.buildId;
-                    log.debug(`Captured Next.js buildId: ${nextBuildId}`);
-                }
-            }
-
-            // Try Apollo extraction first (Priority 1)
-            const apolloData = extractApolloState($);
-            if (apolloData) {
-                const apolloProducts = extractProductsFromApollo(apolloData, url);
-                products.push(...apolloProducts);
-            }
-
-            // Fallback to HTML parsing if Apollo didn't yield results
-            if (products.length === 0) {
-                const htmlProducts = extractFromHTML($, url);
-                products.push(...htmlProducts);
-            }
-
-            for (const product of products) {
-                if (!product.source_url) product.source_url = url;
-                if (!product.store_slug) {
-                    product.store_slug = extractRetailerSlugFromUrl(product.product_url || url);
-                }
             }
 
             return products;
@@ -1646,7 +1671,8 @@ async function main() {
         log.info('📈 Stats saved to key-value store');
 
     } catch (error) {
-        log.error('Actor failed:', error);
+        log.error('Actor failed');
+        log.exception(error);
         throw error;
     } finally {
         await Actor.exit();
