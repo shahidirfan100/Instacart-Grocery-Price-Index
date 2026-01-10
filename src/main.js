@@ -689,6 +689,141 @@ async function main() {
             return products;
         }
 
+        // ==================== FETCH PRODUCT DETAIL PAGE ====================
+
+        /**
+         * Fetch product detail page and extract missing fields (price, brand, original_price, unit_price)
+         */
+        async function fetchProductDetails(product) {
+            if (!product.product_url) return product;
+
+            try {
+                // Add small delay between detail page requests
+                await sleep(500 + Math.random() * 500);
+
+                log.debug(`📄 Fetching details: ${product.product_url}`);
+
+                let html = await fetchWithHTTP(product.product_url);
+                if (!html && usePlaywright) {
+                    html = await fetchWithPlaywright(product.product_url);
+                }
+
+                if (!html) {
+                    log.debug(`Failed to fetch details for: ${product.name}`);
+                    return product;
+                }
+
+                const $ = cheerioLoad(html);
+                const apolloData = extractApolloState($);
+
+                if (apolloData) {
+                    // Look for product detail data in Apollo cache
+                    for (const [key, value] of Object.entries(apolloData)) {
+                        if (!value || typeof value !== 'object') continue;
+
+                        // Look for Item or Product types with pricing info
+                        if (key.startsWith('Item:') || key.startsWith('Product:') ||
+                            value.__typename === 'Item' || value.__typename === 'Product' ||
+                            value.__typename === 'LandingProduct') {
+
+                            // Extract price from detail page
+                            const pricing = value.pricing || value.priceInfo || value.viewSection?.priceInfo || {};
+                            const viewSection = value.viewSection || {};
+
+                            // Price - check multiple paths
+                            if (!product.price) {
+                                const priceValue = pricing.price || pricing.currentPrice || pricing.salePrice ||
+                                    value.price || value.currentPrice || value.salePrice ||
+                                    pricing.priceString || value.priceString ||
+                                    viewSection.price || null;
+                                if (priceValue) {
+                                    product.price = typeof priceValue === 'number' ? priceValue : parsePrice(priceValue);
+                                }
+                            }
+
+                            // Original price
+                            if (!product.original_price) {
+                                const origPrice = pricing.originalPrice || pricing.wasPrice || pricing.regularPrice ||
+                                    value.originalPrice || value.wasPrice || value.regularPrice ||
+                                    pricing.basePrice || null;
+                                if (origPrice) {
+                                    product.original_price = typeof origPrice === 'number' ? origPrice : parsePrice(origPrice);
+                                }
+                            }
+
+                            // Unit price
+                            if (!product.unit_price) {
+                                const unitP = pricing.unitPrice || pricing.pricePerUnit || pricing.secondaryPrice ||
+                                    value.unitPrice || value.pricePerUnit || value.unitPricing ||
+                                    viewSection.unitPrice || null;
+                                if (unitP) {
+                                    product.unit_price = unitP;
+                                }
+                            }
+
+                            // Brand
+                            if (!product.brand) {
+                                const brandValue = value.brand || value.brandName || value.brandInfo?.name ||
+                                    viewSection.brand || viewSection.brandName ||
+                                    value.manufacturer || null;
+                                if (brandValue) {
+                                    product.brand = brandValue;
+                                }
+                            }
+
+                            // Retailer/Store
+                            if (product.store === 'Instacart' || !product.store) {
+                                const retailerValue = value.retailerName || value.retailer?.name ||
+                                    value.storeName || value.store?.name ||
+                                    viewSection.retailerName || null;
+                                if (retailerValue) {
+                                    product.store = retailerValue;
+                                }
+                            }
+
+                            // If we found pricing data, break
+                            if (product.price || product.brand) {
+                                log.debug(`✅ Got details for ${product.name}: price=${product.price}, brand=${product.brand}`);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: Try HTML parsing for price/brand on detail page
+                if (!product.price || !product.brand) {
+                    // Price from HTML
+                    if (!product.price) {
+                        const priceText = $('[data-testid*="price"], [class*="Price"], [class*="price"]').first().text().trim();
+                        if (priceText) {
+                            product.price = parsePrice(priceText);
+                        }
+                    }
+
+                    // Brand from HTML
+                    if (!product.brand) {
+                        const brandText = $('[data-testid*="brand"], [class*="Brand"], [class*="brand"], [itemprop="brand"]').first().text().trim();
+                        if (brandText && brandText.length < 100) {
+                            product.brand = brandText;
+                        }
+                    }
+
+                    // Unit price from HTML
+                    if (!product.unit_price) {
+                        const unitText = $('[data-testid*="unit-price"], [class*="UnitPrice"], [class*="perUnit"]').first().text().trim();
+                        if (unitText) {
+                            product.unit_price = unitText;
+                        }
+                    }
+                }
+
+            } catch (e) {
+                log.debug(`Error fetching product details: ${e.message}`);
+            }
+
+            return product;
+        }
+
         // ==================== RUN SCRAPER ====================
 
         const allProducts = [];
@@ -727,6 +862,31 @@ async function main() {
                 currentPage++;
             }
         }
+
+        // ==================== ENRICH PRODUCTS WITH DETAIL PAGE DATA ====================
+        log.info(`🔍 Fetching detail pages for ${allProducts.length} products to get price/brand data...`);
+
+        let enrichedCount = 0;
+        for (let i = 0; i < allProducts.length; i++) {
+            const product = allProducts[i];
+
+            // Only fetch details if missing critical pricing data
+            if (!product.price || !product.brand) {
+                const enrichedProduct = await fetchProductDetails(product);
+                allProducts[i] = enrichedProduct;
+
+                if (enrichedProduct.price || enrichedProduct.brand) {
+                    enrichedCount++;
+                }
+
+                // Log progress every 5 products
+                if ((i + 1) % 5 === 0 || i === allProducts.length - 1) {
+                    log.info(`📊 Detail fetching progress: ${i + 1}/${allProducts.length} (enriched: ${enrichedCount})`);
+                }
+            }
+        }
+
+        log.info(`✅ Enriched ${enrichedCount}/${allProducts.length} products with detail page data`);
 
         // Push all data in batches
         const BATCH_SIZE = 20;
